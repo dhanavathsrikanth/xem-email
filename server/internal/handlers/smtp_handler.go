@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"kori/internal/db"
 	"kori/internal/models"
 	"kori/internal/utils"
 	"net/http"
@@ -16,6 +17,7 @@ var log = logger.New("smtp_handler")
 type SMTPHandler struct{}
 
 type SMTPTestRequest struct {
+	ID         string `json:"id"`
 	Host       string `json:"host" validate:"required"`
 	Port       int    `json:"port" validate:"required"`
 	Username   string `json:"username" validate:"required"`
@@ -35,6 +37,16 @@ func (h *SMTPHandler) TestSMTPConnection(c echo.Context) error {
 	var req SMTPTestRequest
 	if err := c.Bind(&req); err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, "Invalid request body: "+err.Error())
+	}
+	if req.Password == "" && req.ID != "" {
+		stored, err := models.GetSMTPConfig(c.Get("teamID").(string), req.ID, "", db.GetDB().WithContext(c.Request().Context()))
+		if err != nil {
+			return echo.NewHTTPError(404, "Connection not found")
+		}
+		if stored.Host != req.Host || stored.Port != req.Port || stored.Username != req.Username {
+			return echo.NewHTTPError(400, "Enter the password again when changing the host, port or username")
+		}
+		req.Password = stored.Password
 	}
 
 	if err := c.Validate(&req); err != nil {

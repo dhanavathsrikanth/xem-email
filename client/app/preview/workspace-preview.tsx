@@ -203,7 +203,7 @@ const transport: Transport = async <T,>(
     );
   if (path === "mail-connections/mailboxes") return [{id:"preview-mailbox", username:"alex@example.com", host:"imap.gmail.com", smtpConfigId:"preview-sender"}] as T;
   if (path === "mail-connections/senders") return [{id:"preview-sender", fromEmail:"alex@example.com", provider:"GOOGLE_OAUTH", isDefault:true}, {id:"preview-cloudflare", fromEmail:"notifications@example.com", provider:"CLOUDFLARE", isDefault:false}] as T;
-  if (path === "mail-connections") return {googleConfigured:true, connections:[{id:"preview-google", provider:"GOOGLE_OAUTH", address:"alex@example.com", smtpConfigId:"preview-sender", imapConfigId:"preview-mailbox"}]} as T;
+  if (path === "mail-connections") return {googleConfigured:true, googleAvailable:true, connections:[{id:"preview-google", provider:"GOOGLE_OAUTH", address:"alex@example.com", smtpConfigId:"preview-sender", imapConfigId:"preview-mailbox"}]} as T;
   if (path.startsWith("imap/folders")) return [{Name:"INBOX", Total:6}, {Name:"Sent", Total:24}, {Name:"Drafts", Total:2}, {Name:"Archive", Total:18}] as T;
   if (path.startsWith("marketing/contacts?")) {
     const params = new URLSearchParams(path.split("?")[1]);

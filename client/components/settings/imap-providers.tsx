@@ -130,7 +130,7 @@ export function IMAPProviders({
                         <Input
                           id="password"
                           type={showPassword ? "text" : "password"}
-                          placeholder="********"
+                          placeholder={form.watch("id") ? "Leave blank to keep current password" : "Password"}
                           {...field}
                         />
                       </FormControl>

@@ -135,7 +135,7 @@ export function SMTPProviders({
                   <Input
                     id="password"
                     type={showPassword ? "text" : "password"}
-                    placeholder="********"
+                    placeholder={form.watch("id") ? "Leave blank to keep current password" : "Password"}
                     {...form.register("password")}
                   />
                   {!showPassword ? (

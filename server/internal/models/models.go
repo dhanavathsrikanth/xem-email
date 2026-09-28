@@ -235,6 +235,9 @@ func (s *IMAPConfig) BeforeCreate(tx *gorm.DB) error {
 }
 
 func (s *SMTPConfig) BeforeUpdate(tx *gorm.DB) error {
+	if s.Password == "" {
+		return nil
+	}
 	password, err := crypto.Encrypt(s.Password)
 	if err != nil {
 		return fmt.Errorf("failed to encrypt password: %w", err)
@@ -244,6 +247,9 @@ func (s *SMTPConfig) BeforeUpdate(tx *gorm.DB) error {
 }
 
 func (s *IMAPConfig) BeforeUpdate(tx *gorm.DB) error {
+	if s.Password == "" {
+		return nil
+	}
 	password, err := crypto.Encrypt(s.Password)
 	if err != nil {
 		return fmt.Errorf("failed to encrypt password: %w", err)
@@ -332,41 +338,43 @@ type Template struct {
 
 type Email struct {
 	Base
-	ClickTrackingEnabled *bool          `json:"-"`
-	DeliveryKey          *string        `gorm:"uniqueIndex" json:"-"`
-	UnsubscribeURL       string         `json:"-"`
-	From                 string         `gorm:"not null" json:"from" validate:"required,email"`
-	To                   string         `gorm:"not null" json:"to" validate:"required,email"`
-	Subject              string         `gorm:"not null" json:"subject" validate:"required"`
-	Body                 string         `gorm:"not null" json:"body" validate:"required"`
-	Status               EmailStatus    `gorm:"not null" json:"status" validate:"required,oneof=DRAFT QUEUED SENDING SENT FAILED"`
-	Error                string         `json:"error" validate:"omitempty"`
-	Data                 datatypes.JSON `gorm:"type:jsonb;default:'{}'" json:"data" validate:"omitempty,json"`
-	TemplateID           string         `gorm:"type:uuid;default:NULL" json:"templateId" validate:"omitempty,uuid"`
-	Template             *Template      `json:"template,omitempty"`
-	TeamID               string         `gorm:"type:uuid;not null" json:"teamId" validate:"required,uuid"`
-	Team                 *Team          `json:"team,omitempty"`
-	ContactID            string         `gorm:"type:uuid;default:NULL" json:"contactId" validate:"omitempty,uuid"`
-	Contact              *Contact       `json:"contact,omitempty"`
-	SMTPConfigID         string         `gorm:"type:uuid;not null" json:"smtpConfigId" validate:"required,uuid"`
-	SMTPConfig           *SMTPConfig    `json:"smtpConfig,omitempty"`
-	SentAt               time.Time      `json:"sentAt" validate:"omitempty"`
-	SendAt               time.Time      `json:"sendAt" validate:"omitempty"`
-	CategoryID           string         `gorm:"type:uuid;not null" json:"categoryId" validate:"required,uuid"`
-	Category             *EmailCategory `json:"category,omitempty"`
-	CampaignID           string         `gorm:"type:uuid;default:NULL" json:"campaignId" validate:"omitempty,uuid"`
-	Campaign             *Campaign      `json:"campaign,omitempty"`
-	CC                   string         `json:"cc" validate:"omitempty,email"`
-	BCC                  string         `json:"bcc" validate:"omitempty,email"`
-	ReplyTo              string         `json:"replyTo" validate:"omitempty,email"`
-	InReplyTo            string         `json:"inReplyTo,omitempty"`
-	ProviderResult       datatypes.JSON `gorm:"type:jsonb" json:"providerResult,omitempty"`
-	Test                 bool           `gorm:"not null;default:false" json:"test"`
+	ClickTrackingEnabled *bool            `json:"-"`
+	DeliveryKey          *string          `gorm:"uniqueIndex" json:"-"`
+	RequestHash          string           `json:"-"`
+	Attachments          []MailAttachment `gorm:"serializer:json;type:jsonb" json:"attachments,omitempty"`
+	UnsubscribeURL       string           `json:"-"`
+	From                 string           `gorm:"not null" json:"from" validate:"required,email"`
+	To                   string           `gorm:"not null" json:"to" validate:"required,email"`
+	Subject              string           `gorm:"not null" json:"subject" validate:"required"`
+	Body                 string           `gorm:"not null" json:"body" validate:"required"`
+	Status               EmailStatus      `gorm:"not null" json:"status" validate:"required,oneof=DRAFT QUEUED SENDING SENT FAILED"`
+	Error                string           `json:"error" validate:"omitempty"`
+	Data                 datatypes.JSON   `gorm:"type:jsonb;default:'{}'" json:"data" validate:"omitempty,json"`
+	TemplateID           string           `gorm:"type:uuid;default:NULL" json:"templateId" validate:"omitempty,uuid"`
+	Template             *Template        `json:"template,omitempty"`
+	TeamID               string           `gorm:"type:uuid;not null" json:"teamId" validate:"required,uuid"`
+	Team                 *Team            `json:"team,omitempty"`
+	ContactID            string           `gorm:"type:uuid;default:NULL" json:"contactId" validate:"omitempty,uuid"`
+	Contact              *Contact         `json:"contact,omitempty"`
+	SMTPConfigID         string           `gorm:"type:uuid;not null" json:"smtpConfigId" validate:"required,uuid"`
+	SMTPConfig           *SMTPConfig      `json:"smtpConfig,omitempty"`
+	SentAt               time.Time        `json:"sentAt" validate:"omitempty"`
+	SendAt               time.Time        `json:"sendAt" validate:"omitempty"`
+	CategoryID           string           `gorm:"type:uuid;not null" json:"categoryId" validate:"required,uuid"`
+	Category             *EmailCategory   `json:"category,omitempty"`
+	CampaignID           string           `gorm:"type:uuid;default:NULL" json:"campaignId" validate:"omitempty,uuid"`
+	Campaign             *Campaign        `json:"campaign,omitempty"`
+	CC                   string           `json:"cc" validate:"omitempty,email"`
+	BCC                  string           `json:"bcc" validate:"omitempty,email"`
+	ReplyTo              string           `json:"replyTo" validate:"omitempty,email"`
+	InReplyTo            string           `json:"inReplyTo,omitempty"`
+	ProviderResult       datatypes.JSON   `gorm:"type:jsonb" json:"providerResult,omitempty"`
+	Test                 bool             `gorm:"not null;default:false" json:"test"`
 }
 
 func (e *Email) BeforeUpdate(tx *gorm.DB) error {
 	e.UpdatedAt = time.Now()
-	return nil
+	return ValidateMailAttachments(e.Attachments)
 }
 
 func (e *Email) AfterUpdate(tx *gorm.DB) error {

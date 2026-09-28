@@ -2,6 +2,9 @@ package services
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"kori/internal/config"
@@ -17,6 +20,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 )
 
 var (
@@ -54,6 +58,9 @@ type sendEmailHandlerBody struct {
 	bcc            string
 	replyTo        string
 	inReplyTo      string
+	attachments    []models.MailAttachment
+	outboxID       uuid.UUID
+	requestHash    string
 	durable        bool
 	testMail       bool
 	sendAt         time.Time
@@ -63,6 +70,27 @@ type sendEmailHandlerBody struct {
 // QueueAPIEmail persists an outbox record before acknowledging the request.
 // The existing periodic dispatcher retries enqueue when Redis is unavailable.
 func QueueAPIEmail(email *models.Email) error {
+	return QueueAPIEmailWithKey(email, "")
+}
+
+var ErrEmailRequestConflict = errors.New("this request key was already used for a different message")
+var ErrEmailSenderUnavailable = errors.New("selected sender is unavailable or inactive")
+var ErrEmailTemplateUnavailable = errors.New("template is unavailable")
+
+// Retries of an identical request return its original durable outbox ID, even
+// after delivery. A changed payload must use a new key. The unique email ID is
+// the final concurrency boundary, so two simultaneous requests cannot enqueue
+// two messages.
+func QueueAPIEmailWithKey(email *models.Email, key string) error {
+	return QueueAPIEmailRequest(email, key, "")
+}
+
+// The receipt uses the requested sender selection, before resolving a default
+// or provider. A retry still finds it after a disconnect or a default change.
+func QueueAPIEmailRequest(email *models.Email, key, provider string) error {
+	if err := models.ValidateMailAttachments(email.Attachments); err != nil {
+		return err
+	}
 	variables := map[string]string{}
 	if email.Data != nil {
 		var err error
@@ -71,7 +99,64 @@ func QueueAPIEmail(email *models.Email) error {
 			return err
 		}
 	}
-	return sendEmail(&sendEmailHandlerBody{teamId: email.TeamID, templateId: email.TemplateID, to: email.To, SMTPProvider: email.SMTPConfigID, categoryId: email.CategoryID, variables: variables, subject: email.Subject, body: email.Body, cc: email.CC, bcc: email.BCC, replyTo: email.ReplyTo, inReplyTo: email.InReplyTo, testMail: email.Test, sendAt: email.SendAt, durable: true})
+	handler := &sendEmailHandlerBody{teamId: email.TeamID, templateId: email.TemplateID, to: email.To, SMTPProvider: email.SMTPConfigID, categoryId: email.CategoryID, variables: variables, subject: email.Subject, body: email.Body, cc: email.CC, bcc: email.BCC, replyTo: email.ReplyTo, inReplyTo: email.InReplyTo, attachments: email.Attachments, testMail: email.Test, sendAt: email.SendAt, durable: true, outboxID: uuid.New()}
+	if key != "" {
+		handler.outboxID = uuid.NewSHA1(uuid.NameSpaceOID, []byte("xem:outbox:"+email.TeamID+":"+key))
+		// Only user-controlled, immutable request fields belong in this digest.
+		payload, err := json.Marshal(struct {
+			Template, To, Sender, Provider, Subject, Body, CC, BCC, ReplyTo, InReplyTo string
+			Variables                                                                  map[string]string
+			Attachments                                                                []models.MailAttachment
+			Test                                                                       bool
+			SendAt                                                                     time.Time
+		}{email.TemplateID, email.To, email.SMTPConfigID, provider, email.Subject, email.Body, email.CC, email.BCC, email.ReplyTo, email.InReplyTo, variables, email.Attachments, email.Test, email.SendAt})
+		if err != nil {
+			return err
+		}
+		hash := sha256.Sum256(payload)
+		handler.requestHash = hex.EncodeToString(hash[:])
+		if found, err := existingAPIEmail(db.DB, handler.outboxID, handler.requestHash); found || err != nil {
+			email.ID = handler.outboxID.String()
+			return err
+		}
+	}
+	sender, err := models.GetSMTPConfig(email.TeamID, email.SMTPConfigID, provider, db.DB)
+	if errors.Is(err, gorm.ErrRecordNotFound) || (err == nil && !sender.IsActive) {
+		return ErrEmailSenderUnavailable
+	}
+	if err != nil {
+		return err
+	}
+	handler.SMTPProvider = sender.ID
+	if email.TemplateID != "" {
+		var count int64
+		if err := db.DB.Model(&models.Template{}).Where("id = ? AND team_id = ? AND is_deleted = false", email.TemplateID, email.TeamID).Count(&count).Error; err != nil {
+			return err
+		}
+		if count != 1 {
+			return ErrEmailTemplateUnavailable
+		}
+	}
+	if err := sendEmail(handler); err != nil {
+		return err
+	}
+	email.ID = handler.outboxID.String()
+	return nil
+}
+
+func existingAPIEmail(tx *gorm.DB, id uuid.UUID, hash string) (bool, error) {
+	var row models.Email
+	err := tx.Select("id", "request_hash").Where("id = ?", id.String()).First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if row.RequestHash != hash {
+		return true, ErrEmailRequestConflict
+	}
+	return true, nil
 }
 
 func registerEmailEventHandlers() {
@@ -430,7 +515,10 @@ func sendEmail(
 		return log.Error("failed to begin transaction", tx.Error)
 	}
 
-	definedID := uuid.New()
+	definedID := handler.outboxID
+	if definedID == uuid.Nil {
+		definedID = uuid.New()
+	}
 
 	// Get SMTP config
 	smtpConfig, err := models.GetSMTPConfig(handler.teamId, handler.SMTPProvider, "", tx)
@@ -442,7 +530,7 @@ func sendEmail(
 	// Get template
 	template := &models.Template{}
 	if handler.templateId != "" {
-		if err := tx.Where("id = ? AND team_id = ?", handler.templateId, handler.teamId).Preload("HtmlFile").First(template).Error; err != nil {
+		if err := tx.Where("id = ? AND team_id = ? AND is_deleted = false", handler.templateId, handler.teamId).Preload("HtmlFile").First(template).Error; err != nil {
 			tx.Rollback()
 			return log.Error("failed to get template ❌", err)
 		}
@@ -554,6 +642,9 @@ func sendEmail(
 		BCC:          handler.bcc,
 		ReplyTo:      handler.replyTo,
 		InReplyTo:    handler.inReplyTo,
+		Attachments:  handler.attachments,
+		RequestHash:  handler.requestHash,
+		Test:         handler.testMail,
 		SendAt:       handler.sendAt,
 	}
 
@@ -564,6 +655,11 @@ func sendEmail(
 	}
 	if err := tx.Create(email).Error; err != nil {
 		tx.Rollback()
+		if handler.requestHash != "" {
+			if found, lookupErr := existingAPIEmail(db.DB, definedID, handler.requestHash); found || lookupErr != nil {
+				return lookupErr
+			}
+		}
 		return log.Error("failed to create email ❌", err)
 	}
 

@@ -49,7 +49,7 @@ export function IMAPSettings({
   const onSubmit = async (data: IMAPConfig) => {
     try {
       // first test the configuration
-      await testConfiguration(data);
+      await testConfiguration(data, false);
 
       const response = await apiFetch(data.id ? "imap/" + data.id : "imap", {
         method: data.id ? "PUT" : "POST",
@@ -61,8 +61,8 @@ export function IMAPSettings({
       });
 
       if (!response.ok) {
-        const apiError = (await response.json()) as ApiError;
-        throw new Error(apiError.message);
+        const apiError = (await response.json()) as ApiError & { error?: unknown };
+        throw new Error(typeof apiError.error === "string" ? apiError.error : apiError.message || "Unable to save IMAP configuration");
       }
 
       refresh();
@@ -71,7 +71,7 @@ export function IMAPSettings({
       setIsDialogOpen(false);
       form.reset({ id: null, host: "", port: 993, username: "", password: "" });
     } catch (error: any) {
-      toast.error("Failed to save IMAP configuration");
+      toast.error("Failed to save IMAP configuration", { description: error.message });
     }
   };
 
@@ -86,7 +86,7 @@ export function IMAPSettings({
     }
   };
 
-  const testConfiguration = async (config: IMAPConfig) => {
+  const testConfiguration = async (config: IMAPConfig, notify = true) => {
     try {
       const response = await apiFetch("imap/test", {
         method: "POST",
@@ -98,25 +98,25 @@ export function IMAPSettings({
       });
 
       if (!response.ok) {
-        const apiError = (await response.json()) as ApiError;
-        throw new Error(apiError.message);
+        const apiError = (await response.json()) as ApiError & { error?: unknown };
+        throw new Error(typeof apiError.error === "string" ? apiError.error : apiError.message || "Check the IMAP connection details");
       }
 
-      toast.success("IMAP configuration test successful");
+      if (notify) toast.success("IMAP configuration test successful");
     } catch (error: any) {
-      toast.error("IMAP configuration test failed");
+      if (notify) toast.error("IMAP configuration test failed", { description: error.message });
       throw error;
     }
   };
 
   useEffect(() => {
     if (editConfig) {
-      form.reset(editConfig);
+      form.reset({ ...editConfig, password: "" });
       setIsDialogOpen(true);
     }
   }, [editConfig, form]);
 
-  const edit = (config: IMAPConfig) => { form.reset(config); setEditConfig(config); setIsDialogOpen(true); };
+  const edit = (config: IMAPConfig) => { form.reset({ ...config, password: "" }); setEditConfig(config); setIsDialogOpen(true); };
   const closeDialog = (open: boolean) => {
     setIsDialogOpen(open);
     if (!open) { setEditConfig(null); form.reset({ id: null, host: "", port: 993, username: "", password: "" }); }

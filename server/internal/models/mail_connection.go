@@ -59,6 +59,9 @@ func (e *Email) BeforeCreate(tx *gorm.DB) error {
 	if err := e.Base.BeforeCreate(tx); err != nil {
 		return err
 	}
+	if err := ValidateMailAttachments(e.Attachments); err != nil {
+		return err
+	}
 	return rejectCloudflareMarketing(tx, e.TeamID, e.SMTPConfigID, e.CampaignID != "" || e.UnsubscribeURL != "", e.CategoryID)
 }
 

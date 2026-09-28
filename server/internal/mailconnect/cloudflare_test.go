@@ -2,6 +2,7 @@ package mailconnect
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -53,6 +54,20 @@ func TestCloudflareRecipientOutcomes(t *testing.T) {
 		})
 	}
 	require.Equal(t, "PARTIAL", (CloudflareResult{Delivered: []string{"a"}, PermanentBounces: []string{"b"}}).Status())
+}
+
+func TestCloudflareAttachmentsUseProviderContract(t *testing.T) {
+	content := base64.StdEncoding.EncodeToString([]byte("local receipt attachment"))
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		var body map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		files := body["attachments"].([]any)
+		require.Len(t, files, 1)
+		require.Equal(t, map[string]any{"filename": "receipt.txt", "content": content, "type": "text/plain", "disposition": "attachment"}, files[0])
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"success":true,"result":{"delivered":["reader@example.com"]}}`))}, nil
+	})}
+	_, err := SendCloudflare(context.Background(), client, strings.Repeat("a", 32), "local-test-token", CloudflareMessage{From: "sender@example.com", To: []string{"reader@example.com"}, HTML: "<p>Receipt</p>", Attachments: []CloudflareAttachment{{Filename: "receipt.txt", Content: content, Type: "text/plain", Disposition: "attachment"}}})
+	require.NoError(t, err)
 }
 
 func TestCloudflareDoesNotRetryOrLeakProviderErrors(t *testing.T) {

@@ -4,7 +4,7 @@ This change adds Google mailbox OAuth and Cloudflare transactional sending to Xe
 
 ## Google mailbox setup
 
-Google mailbox authorization is separate from Google sign-in. Configure a dedicated Google OAuth web client, enable the Gmail API in its Google Cloud project, and register this exact redirect URI:
+Google mailbox authorization is separate from Google sign-in. Configure a Google OAuth web client, enable the Gmail API in its Google Cloud project, and register this exact redirect URI. An existing web client can be reused; preserve its sign-in redirects and keep the mailbox grant as a separate flow:
 
 ```text
 https://YOUR_XEM_APP/settings/imap/google/callback
@@ -16,9 +16,13 @@ Set these variables on the **backend**, through your deployment's secret managem
 GOOGLE_MAIL_CLIENT_ID=your-oauth-client-id
 GOOGLE_MAIL_CLIENT_SECRET=your-oauth-client-secret
 GOOGLE_MAIL_REDIRECT_URI=https://YOUR_XEM_APP/settings/imap/google/callback
+GOOGLE_MAIL_ACCESS=testing
+GOOGLE_MAIL_TEST_USERS=authorized-tester@example.com
 ```
 
 For local development, an exact `http://localhost:PORT/settings/imap/google/callback` URI is allowed. Never put the client secret in a `NEXT_PUBLIC_` variable. Back up the existing installation RSA encryption key; losing it also loses access to stored connection credentials.
+
+Credentials alone do not enable public mailbox connections. The default `testing` mode requires an exact, case-insensitive address in `GOOGLE_MAIL_TEST_USERS`, for both the initiating Xem user and the mailbox Google returns. Unknown modes and `disabled` deny new grants. Set `GOOGLE_MAIL_ACCESS=public` only after applicable Google verification is complete; self-hosters using their own OAuth application can explicitly choose `self-hosted`. This gate controls new connections, not revocation of existing grants. See [the verification checklist](google-mail-verification.md).
 
 1. Sign in as a workspace administrator and open **Settings → IMAP**.
 2. Select **Connect Google mailbox** and authorize the intended Gmail or Workspace mailbox.
@@ -42,6 +46,7 @@ In **Settings → SMTP**, save the Cloudflare account ID, sending token, and sen
 ```json
 {
   "smtpConfigId": "YOUR_CLOUDFLARE_SENDER_ID",
+  "requestId": "87f7e850-33b9-4f15-9b42-9aabdb0daee2",
   "to": "a-recipient-you-control@example.com",
   "subject": "Your receipt",
   "html": "<p>Your payment was received.</p>",
@@ -51,11 +56,15 @@ In **Settings → SMTP**, save the Cloudflare account ID, sending token, and sen
 
 The endpoint remains `POST /api/v1/emails`. A successful response now means the message was committed to the database outbox. The existing worker's minute-based dispatcher enqueues due messages and recovers from temporary Redis unavailability. It respects `scheduleAt`. Keep the task worker and scheduler running.
 
+The response includes the persisted message `id`. Use a new UUID `requestId` for each intended message and reuse the identical key and payload when retrying an uncertain request. The key is scoped to the workspace. Replays return the original receipt even after sending, soft deletion, a sender disconnect, or a changed default sender; a changed payload returns HTTP 409. This deduplicates saving to Xem's outbox, not provider delivery. It never retries an ambiguous SMTP or Cloudflare submission.
+
+Outgoing attachments are available in Compose and through `attachments: [{filename, content, contentType}]`, where `content` is standard base64. Up to ten files and 3 MiB of decoded data are allowed in total. Names cannot contain paths or hidden/control characters; MIME types cannot contain parameters. Bytes are stored with the durable email row, attached through SMTP or Cloudflare, and exposed for download in Outbox. Provider message-size limits still apply. Arbitrary remote attachment URLs and filesystem paths are not accepted.
+
 Cloudflare currently supports **transactional email only**. Campaigns/newsletters are rejected at message creation and delivery; use a marketing-capable SMTP provider or Xem's existing managed-sending path for them. The API cannot determine the intent of arbitrary user-written content: senders must use this connector for eligible transactional messages.
 
 Cloudflare's documented limits, checked September 28, 2026: 50 combined recipients, 5 MiB message size, 998-character subject, and 16 KiB custom headers. Arbitrary recipients require Workers Paid. The documented account allowance is 3,000 sends/month, then $0.35 per 1,000; Workers plan charges and provider usage are separate from Xem. Recheck the provider links below before quoting prices to customers.
 
-Xem calls Cloudflare's REST API directly. The Go backend, database, and dashboard stay on the existing deployment. No Worker/D1/R2 migration is required. This release does **not** add Cloudflare inbound routing, stored Cloudflare mailboxes, or outgoing attachments.
+Xem calls Cloudflare's REST API directly. The Go backend, database, and dashboard stay on the existing deployment. No Worker/D1/R2 migration is required. This release does **not** add Cloudflare inbound routing or stored Cloudflare mailboxes.
 
 ### Delivery status
 
@@ -81,11 +90,21 @@ The raw recipient groups are stored as `providerResult` on the email record. Thi
 
 API keys need existing `imap_configs:read/create` or `smtp_configs:read` permissions for mailbox reads/flags/sender listing. Connection credential management requires a current administrator session and denies API keys.
 
+Legacy SMTP/IMAP passwords are write-only, including when configurations are loaded through related records. Leaving the password blank while editing or testing an unchanged login endpoint keeps the stored password. Changing host, port or username requires re-entering it, so an edit cannot forward an existing secret to another endpoint.
+
 ## Release acceptance
 
 Automated checks cover state expiry/replay/tenant binding, authorization, encryption and credential redaction, pagination/search, recipient outcomes, size/header validation, and ambiguous request handling using local mocks. Browser preview uses sample data and blocks real sending.
 
 Before making a production availability claim, use an authorized test Workspace/Gmail account to check consent, refresh after token expiry, inbox folders, reply threading, and disconnect. Use an enabled Cloudflare domain and recipients you control to verify transactional delivery, queued recipients, and provider logs. These live provider checks require actual deployment configuration and are not implied by local tests.
+
+### Isolated local provider checks
+
+`go run ./cmd/mailcheck` from `server` starts the real mail routes, worker and scheduler without requiring object storage. Configure the normal backend environment, a random `JWT_SECRET` of at least 32 characters, an installation RSA key, local Redis, and a dedicated PostgreSQL database with a name beginning `xem_mailcheck_`. `POSTGRES_HOST` must be `127.0.0.1`. The API binds only to loopback. `MAILCHECK_RECIPIENT` must be one address you control; the delivery boundary rejects every other recipient, including CC and BCC.
+
+Set `SUPERADMIN_EMAIL`, `SUPERADMIN_PASSWORD`, `SUPERADMIN_NAME` and `SUPERADMIN_TEAM_NAME` for the isolated local workspace. Keep these values and the OAuth client secret in protected local configuration outside Git. Point the client API URLs at this runner and register its exact callback URI with Google. This runner is for provider acceptance, not a production deployment or full storage/marketing-runtime test.
+
+Database connection values are quoted, including empty passwords, and the backend verifies `current_database()` before running migrations. SQL logging omits parameter values to avoid recording credentials and message bodies.
 
 ## Research sources
 

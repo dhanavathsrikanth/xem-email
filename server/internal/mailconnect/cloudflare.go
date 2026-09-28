@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"golang.org/x/net/html"
 	"io"
+	"kori/internal/models"
 	"net/http"
 	"net/mail"
 	"regexp"
@@ -15,16 +16,24 @@ import (
 	"unicode/utf8"
 )
 
+type CloudflareAttachment struct {
+	Filename    string `json:"filename"`
+	Content     string `json:"content"`
+	Type        string `json:"type"`
+	Disposition string `json:"disposition"`
+}
+
 type CloudflareMessage struct {
-	From    string            `json:"from"`
-	To      []string          `json:"to"`
-	CC      []string          `json:"cc,omitempty"`
-	BCC     []string          `json:"bcc,omitempty"`
-	Subject string            `json:"subject"`
-	HTML    string            `json:"html"`
-	Text    string            `json:"text"`
-	ReplyTo string            `json:"reply_to,omitempty"`
-	Headers map[string]string `json:"headers,omitempty"`
+	From        string                 `json:"from"`
+	To          []string               `json:"to"`
+	CC          []string               `json:"cc,omitempty"`
+	BCC         []string               `json:"bcc,omitempty"`
+	Subject     string                 `json:"subject"`
+	HTML        string                 `json:"html"`
+	Text        string                 `json:"text"`
+	ReplyTo     string                 `json:"reply_to,omitempty"`
+	Headers     map[string]string      `json:"headers,omitempty"`
+	Attachments []CloudflareAttachment `json:"attachments,omitempty"`
 }
 type CloudflareResult struct {
 	Delivered        []string `json:"delivered"`
@@ -46,6 +55,16 @@ func (r CloudflareResult) Status() string {
 }
 
 func validateCloudflareMessage(m *CloudflareMessage) (map[string]bool, error) {
+	files := make([]models.MailAttachment, 0, len(m.Attachments))
+	for _, file := range m.Attachments {
+		if file.Disposition != "attachment" {
+			return nil, errors.New("unsupported attachment disposition")
+		}
+		files = append(files, models.MailAttachment{Filename: file.Filename, Content: file.Content, ContentType: file.Type})
+	}
+	if err := models.ValidateMailAttachments(files); err != nil {
+		return nil, err
+	}
 	if utf8.RuneCountInString(m.Subject) > 998 || strings.ContainsAny(m.Subject, "\r\n") {
 		return nil, errors.New("invalid Cloudflare subject")
 	}

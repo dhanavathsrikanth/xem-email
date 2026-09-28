@@ -9,6 +9,7 @@ import (
 	"kori/internal/mailconnect"
 	"kori/internal/models"
 	"kori/internal/utils/base64"
+	"net/mail"
 	"os"
 	"strings"
 	"sync"
@@ -79,7 +80,12 @@ func (h *EmailHandler) SendEmail(email *models.Email) error {
 	m.SetHeader("From", email.From)
 	m.SetHeader("To", email.To)
 	m.SetHeader("Subject", email.Subject)
-	m.SetHeader("Message-ID", "<"+email.ID+"@posthoot.local>")
+	sender, err := mail.ParseAddress(email.From)
+	if err != nil {
+		return fmt.Errorf("invalid sender address")
+	}
+	messageDomain := sender.Address[strings.LastIndexByte(sender.Address, '@')+1:]
+	m.SetHeader("Message-ID", "<"+email.ID+"@"+messageDomain+">")
 	if !email.CreatedAt.IsZero() {
 		m.SetHeader("Date", email.CreatedAt.UTC().Format(time.RFC1123Z))
 	}
@@ -97,11 +103,27 @@ func (h *EmailHandler) SendEmail(email *models.Email) error {
 	}
 
 	if email.CC != "" {
-		m.SetHeader("Cc", strings.Split(email.CC, ",")...)
+		addresses, err := mail.ParseAddressList(email.CC)
+		if err != nil {
+			return fmt.Errorf("invalid Cc recipients")
+		}
+		values := make([]string, len(addresses))
+		for i, address := range addresses {
+			values[i] = address.String()
+		}
+		m.SetHeader("Cc", values...)
 	}
 
 	if email.BCC != "" {
-		m.SetHeader("Bcc", strings.Split(email.BCC, ",")...)
+		addresses, err := mail.ParseAddressList(email.BCC)
+		if err != nil {
+			return fmt.Errorf("invalid Bcc recipients")
+		}
+		values := make([]string, len(addresses))
+		for i, address := range addresses {
+			values[i] = address.String()
+		}
+		m.SetHeader("Bcc", values...)
 	}
 
 	// Decode base64 body
@@ -110,6 +132,9 @@ func (h *EmailHandler) SendEmail(email *models.Email) error {
 		return fmt.Errorf("❌ failed to decode email body: %w", err)
 	}
 	m.SetBody("text/html", decodedBody)
+	if err := addMailAttachments(m, email.Attachments); err != nil {
+		return err
+	}
 
 	if RecipientPolicy != nil {
 		var recipients []string
@@ -193,7 +218,11 @@ func sendCloudflareEmail(email *models.Email, message *gomail.Message, html stri
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 	defer cancel()
-	result, err := mailconnect.SendCloudflare(ctx, mailconnect.HTTPClient(), c.AccountID, token, mailconnect.CloudflareMessage{From: c.Address, To: message.GetHeader("To"), CC: message.GetHeader("Cc"), BCC: message.GetHeader("Bcc"), Subject: email.Subject, HTML: html, ReplyTo: email.ReplyTo, Headers: headers})
+	attachments := make([]mailconnect.CloudflareAttachment, 0, len(email.Attachments))
+	for _, file := range email.Attachments {
+		attachments = append(attachments, mailconnect.CloudflareAttachment{Filename: file.Filename, Content: file.Content, Type: file.ContentType, Disposition: "attachment"})
+	}
+	result, err := mailconnect.SendCloudflare(ctx, mailconnect.HTTPClient(), c.AccountID, token, mailconnect.CloudflareMessage{From: c.Address, To: message.GetHeader("To"), CC: message.GetHeader("Cc"), BCC: message.GetHeader("Bcc"), Subject: email.Subject, HTML: html, ReplyTo: email.ReplyTo, Headers: headers, Attachments: attachments})
 	if err != nil {
 		return "", err
 	}

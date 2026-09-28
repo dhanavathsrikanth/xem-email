@@ -1,7 +1,7 @@
 package handlers
 
 import (
-	"kori/internal/db"
+	"errors"
 	"kori/internal/models"
 	"kori/internal/services"
 	"net/http"
@@ -9,24 +9,27 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"gorm.io/datatypes"
 )
 
 type SendEmailRequest struct {
-	TemplateID         string         `json:"templateId"`
-	To                 string         `json:"to" validate:"required,email"`
-	Variables          datatypes.JSON `json:"data" validate:"required,json"`
-	SMTPConfigProvider string         `json:"provider" validate:"omitempty,oneof=CUSTOM GMAIL OUTLOOK AMAZON"`
-	SMTPConfigID       string         `json:"smtpConfigId"`
-	Subject            string         `json:"subject"`
-	Body               string         `json:"html"`
-	CC                 string         `json:"cc"`
-	BCC                string         `json:"bcc"`
-	ReplyTo            string         `json:"replyTo"`
-	InReplyTo          string         `json:"inReplyTo"`
-	Test               bool           `json:"test"`
-	SendAt             time.Time      `json:"scheduleAt"`
+	TemplateID         string                  `json:"templateId"`
+	To                 string                  `json:"to" validate:"required,email"`
+	Variables          datatypes.JSON          `json:"data" validate:"required,json"`
+	SMTPConfigProvider string                  `json:"provider" validate:"omitempty,oneof=CUSTOM GMAIL OUTLOOK AMAZON"`
+	SMTPConfigID       string                  `json:"smtpConfigId"`
+	Subject            string                  `json:"subject"`
+	Body               string                  `json:"html"`
+	CC                 string                  `json:"cc"`
+	BCC                string                  `json:"bcc"`
+	ReplyTo            string                  `json:"replyTo"`
+	InReplyTo          string                  `json:"inReplyTo"`
+	Attachments        []models.MailAttachment `json:"attachments"`
+	RequestID          string                  `json:"requestId"`
+	Test               bool                    `json:"test"`
+	SendAt             time.Time               `json:"scheduleAt"`
 }
 
 // SendEmail sends an email using the provided template and variables
@@ -45,6 +48,14 @@ func SendEmail(c echo.Context) error {
 	c.Request().Body = http.MaxBytesReader(c.Response(), c.Request().Body, 6*1024*1024)
 	if err := c.Bind(&req); err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, "Invalid request body")
+	}
+	if req.RequestID != "" {
+		if _, err := uuid.Parse(req.RequestID); err != nil {
+			return echo.NewHTTPError(400, "requestId must be a UUID")
+		}
+	}
+	if err := models.ValidateMailAttachments(req.Attachments); err != nil {
+		return echo.NewHTTPError(400, err.Error())
 	}
 	if _, err := mail.ParseAddress(req.To); err != nil {
 		return echo.NewHTTPError(400, "A valid recipient is required")
@@ -69,31 +80,11 @@ func SendEmail(c echo.Context) error {
 	// Get teamID from context (set by auth middleware)
 	teamID := c.Get("teamID").(string)
 
-	if req.TemplateID != "" {
-		var count int64
-		if err := db.GetDB().Model(&models.Template{}).Where("id = ? AND team_id = ? AND is_deleted = false", req.TemplateID, teamID).Count(&count).Error; err != nil {
-			return echo.NewHTTPError(500, "Unable to validate template")
-		}
-		if count != 1 {
-			return echo.NewHTTPError(404, "Template not found")
-		}
-	}
-	tx := db.GetDB().WithContext(c.Request().Context())
-
-	smtpConfig, err := models.GetSMTPConfig(teamID, req.SMTPConfigID, req.SMTPConfigProvider, tx)
-
-	if err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to get SMTP config")
-	}
-	if !smtpConfig.IsActive {
-		return echo.NewHTTPError(400, "Selected sender is inactive")
-	}
-
 	email := models.Email{
 		TeamID:       teamID,
 		TemplateID:   req.TemplateID,
 		To:           req.To,
-		SMTPConfigID: smtpConfig.ID,
+		SMTPConfigID: req.SMTPConfigID,
 		Subject:      req.Subject,
 		Data:         req.Variables,
 		Body:         req.Body,
@@ -101,15 +92,26 @@ func SendEmail(c echo.Context) error {
 		BCC:          req.BCC,
 		ReplyTo:      req.ReplyTo,
 		InReplyTo:    req.InReplyTo,
+		Attachments:  req.Attachments,
 		Test:         req.Test,
 		SendAt:       req.SendAt,
 	}
 
-	if err := services.QueueAPIEmail(&email); err != nil {
+	if err := services.QueueAPIEmailRequest(&email, req.RequestID, req.SMTPConfigProvider); err != nil {
+		if errors.Is(err, services.ErrEmailRequestConflict) {
+			return echo.NewHTTPError(409, err.Error())
+		}
+		if errors.Is(err, services.ErrEmailSenderUnavailable) {
+			return echo.NewHTTPError(400, err.Error())
+		}
+		if errors.Is(err, services.ErrEmailTemplateUnavailable) {
+			return echo.NewHTTPError(404, err.Error())
+		}
 		return echo.NewHTTPError(500, "Unable to save email to the outbox. Check the sender, template, and workspace configuration.")
 	}
 
 	return c.JSON(http.StatusOK, map[string]string{
 		"status": "Email saved to outbox",
+		"id":     email.ID,
 	})
 }

@@ -21,6 +21,14 @@ import (
 
 type MailConnectionsHandler struct{ DB *gorm.DB }
 
+func (h *MailConnectionsHandler) googleAvailable(c echo.Context) bool {
+	var user models.User
+	if err := h.DB.Select("email").Where("id = ? AND team_id = ? AND is_deleted = false", c.Get("userID"), c.Get("teamID")).First(&user).Error; err != nil {
+		return false
+	}
+	return mailconnect.GoogleMailAccess(user.Email)
+}
+
 // Mailbox grants are workspace-wide in this release. Only a current workspace
 // administrator can connect/disconnect them; API keys cannot manage credentials.
 func MailConnectionAdmin(next echo.HandlerFunc) echo.HandlerFunc {
@@ -42,7 +50,7 @@ func (h *MailConnectionsHandler) List(c echo.Context) error {
 		return echo.NewHTTPError(500, "Unable to load connections")
 	}
 	_, err := mailconnect.GoogleConfig()
-	return c.JSON(200, map[string]any{"connections": rows, "googleConfigured": err == nil})
+	return c.JSON(200, map[string]any{"connections": rows, "googleConfigured": err == nil, "googleAvailable": err == nil && h.googleAvailable(c)})
 }
 
 // These projections intentionally never load passwords or OAuth secrets.
@@ -76,6 +84,9 @@ func (h *MailConnectionsHandler) Senders(c echo.Context) error {
 }
 
 func (h *MailConnectionsHandler) GoogleStart(c echo.Context) error {
+	if !h.googleAvailable(c) {
+		return echo.NewHTTPError(403, "Google mailbox connections are in a limited test release. Ask the installation administrator for access.")
+	}
 	cfg, err := mailconnect.GoogleConfig()
 	if err != nil {
 		return echo.NewHTTPError(503, err.Error())
@@ -160,6 +171,9 @@ func (h *MailConnectionsHandler) GoogleComplete(c echo.Context) error {
 	address, err := mail.ParseAddress(profile.Email)
 	if err != nil || address.Address != profile.Email {
 		return echo.NewHTTPError(502, "Google returned an invalid mailbox address")
+	}
+	if !h.googleAvailable(c) || !mailconnect.GoogleMailAccess(address.Address) {
+		return echo.NewHTTPError(403, "This Google mailbox is not approved for the test release. No mailbox connection was saved.")
 	}
 	connection := models.MailConnection{Base: models.Base{ID: uuid.NewString()}, TeamID: state.TeamID, Provider: mailconnect.Google, Address: address.Address, Active: true}
 	if err := mailconnect.Seal(&connection, token); err != nil {

@@ -25,6 +25,7 @@ export function MailConnections({
   const result = useMarketingQuery<{
     connections: Connection[];
     googleConfigured: boolean;
+    googleAvailable: boolean;
   }>("mail-connections");
   const [busy, setBusy] = useState(false);
   const [address, setAddress] = useState("");
@@ -136,7 +137,7 @@ export function MailConnections({
           {google ? (
             <div className="space-y-2">
               <Button
-                disabled={busy || !result.data?.googleConfigured}
+                disabled={busy || !result.data?.googleConfigured || !result.data?.googleAvailable}
                 onClick={() =>
                   run(async () => {
                     const response = await request<{ url: string }>(
@@ -155,6 +156,7 @@ export function MailConnections({
                   this installation. Google sign-in uses separate credentials.
                 </p>
               )}
+              {result.data?.googleConfigured && !result.data.googleAvailable && <p className="text-xs text-muted-foreground">Google mailbox connections are available to approved testers while verification is in progress. Your administrator can manage access.</p>}
               <p className="text-xs text-muted-foreground">
                 Requires Google’s mail scope for IMAP/SMTP. Workspace
                 administrators may need to allow access. Xem stores tokens

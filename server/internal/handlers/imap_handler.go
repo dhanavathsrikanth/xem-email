@@ -33,6 +33,7 @@ func mailboxAddresses(addresses []*mail.Address) string {
 func NewIMAPHandler(db *gorm.DB) *IMAPHandler { return &IMAPHandler{db: db} }
 
 type IMAPCredentials struct {
+	ID       string `json:"id"`
 	Username string `json:"username"`
 	Password string `json:"password"`
 	Server   string `json:"host"`
@@ -44,6 +45,16 @@ func (h *IMAPHandler) TestConnection(c echo.Context) error {
 	c.Request().Body = http.MaxBytesReader(c.Response(), c.Request().Body, 16*1024)
 	if err := c.Bind(&credentials); err != nil {
 		return echo.NewHTTPError(400, "Invalid connection details")
+	}
+	if credentials.Password == "" && credentials.ID != "" {
+		stored, err := models.GetIMAPConfig(c.Get("teamID").(string), credentials.ID, h.db.WithContext(c.Request().Context()))
+		if err != nil {
+			return echo.NewHTTPError(404, "Connection not found")
+		}
+		if stored.Host != credentials.Server || stored.Port != credentials.Port || stored.Username != credentials.Username {
+			return echo.NewHTTPError(400, "Enter the password again when changing the host, port or username")
+		}
+		credentials.Password = stored.Password
 	}
 	im, err := utils.DialIMAP(c.Request().Context(), credentials.Server, credentials.Port, credentials.Username, credentials.Password)
 	if err != nil {
