@@ -84,6 +84,10 @@ export function SiteFooter() {
             <a href={githubUrl}>Open source on GitHub ↗</a>
             <a href={selfHostUrl}>Self-host Xem ↗</a>
             <a href={contributeUrl}>Contribute to Xem ↗</a>
+            <Link href="/google-mail">Google mail · limited testing</Link>
+            <Link href="/privacy">Privacy policy · draft</Link>
+            <Link href="/data-deletion">Delete your data</Link>
+            <a href="mailto:team@xem.email">Contact the Xem team</a>
           </nav>
         </div>
         <div className="mt-10 flex flex-wrap justify-between gap-4 border-t border-cream/20 pt-6 text-xs text-cream/70">

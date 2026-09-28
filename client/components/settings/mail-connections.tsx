@@ -65,7 +65,7 @@ export function MailConnections({
           </h2>
           <p className="text-sm text-muted-foreground mt-1">
             {google
-              ? "Connect a mailbox for inbox access and sending. This grants your workspace access to its mail; connect a shared business mailbox you intend your team to use."
+              ? "Send emails and replies through Gmail SMTP, and receive, browse, search and read mail through IMAP. This grants your workspace access to the connected mailbox; connect only an account you are authorized to share with your team."
               : "Send transactional emails through your Cloudflare account. Your domain must have Email Sending enabled. Campaigns and newsletters need a different sender."}
           </p>
         </div>
@@ -93,7 +93,11 @@ export function MailConnections({
               </div>
               {disconnecting === connection.id ? (
                 <div className="flex flex-wrap items-center gap-2">
-                  <p className="text-xs">Stop inbox access and future sends?</p>
+                  <p className="max-w-sm text-xs">
+                    {google
+                      ? "Disconnect this inbox and sender? Saved messages stay in Xem. Mail already being sent may still arrive."
+                      : "Disconnect this sender? Saved messages stay in Xem. Mail already being sent may still arrive."}
+                  </p>
                   <Button
                     size="sm"
                     variant="destructive"
@@ -137,7 +141,11 @@ export function MailConnections({
           {google ? (
             <div className="space-y-2">
               <Button
-                disabled={busy || !result.data?.googleConfigured || !result.data?.googleAvailable}
+                disabled={
+                  busy ||
+                  !result.data?.googleConfigured ||
+                  !result.data?.googleAvailable
+                }
                 onClick={() =>
                   run(async () => {
                     const response = await request<{ url: string }>(
@@ -153,14 +161,27 @@ export function MailConnections({
               {result.data && !result.data.googleConfigured && (
                 <p className="text-xs text-muted-foreground">
                   Your administrator needs to configure Google mailbox OAuth on
-                  this installation. Google sign-in uses separate credentials.
+                  this installation. Google sign-in alone does not configure
+                  mailbox access.
                 </p>
               )}
-              {result.data?.googleConfigured && !result.data.googleAvailable && <p className="text-xs text-muted-foreground">Google mailbox connections are available to approved testers while verification is in progress. Your administrator can manage access.</p>}
+              {result.data?.googleConfigured &&
+                !result.data.googleAvailable && (
+                  <p className="text-xs text-muted-foreground">
+                    Google mailbox connections are available to approved testers
+                    while verification is in progress. Your administrator can
+                    manage access.
+                  </p>
+                )}
               <p className="text-xs text-muted-foreground">
                 Requires Google’s mail scope for IMAP/SMTP. Workspace
-                administrators may need to allow access. Xem stores tokens
-                encrypted and never asks for your Google password.
+                administrators may need to allow access. Google sign-in is
+                separate. Xem stores tokens encrypted and never asks for your
+                Google password. Incoming mail is fetched on demand; outgoing
+                messages and attachments are saved in Xem. Connecting does not
+                automatically send your inbox to AI. If you choose an AI writing
+                or assistant action, its inputs and relevant workspace data may
+                be sent to the configured AI service.
               </p>
             </div>
           ) : (
