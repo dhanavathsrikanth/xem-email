@@ -121,7 +121,7 @@ See the [migration and CI guide](migration/README.md) for source provenance, con
 
 ## Contribute
 
-Working on inboxes or provider integrations? See the [connected-mail setup and implementation notes](docs/connected-mail.md) for Gmail, Workspace, IMAP, and Cloudflare, including current limitations and release checks. The [commercial roadmap](docs/connected-mail-commercial.md) describes planned hosted and self-hosted offers; existing free features remain available.
+Working on inboxes or provider integrations? See the [connected-mail setup and implementation notes](docs/connected-mail.md) for Gmail, Workspace, IMAP, and Cloudflare, including current limitations and release checks. The customer-owned inbound Worker has a separate [Cloudflare mailbox setup guide](devops/cloudflare-mailbox/README.md). The [commercial roadmap](docs/connected-mail-commercial.md) describes planned hosted and self-hosted offers; existing free features remain available.
 
 Report bugs with reproduction steps, open a focused PR, or improve the docs. Keep credentials and local `.env` files out of commits. Make component changes directly in this repository and include related frontend/backend updates in the same PR.
 

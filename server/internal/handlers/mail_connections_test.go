@@ -91,7 +91,7 @@ func TestIMAPPaginationAndSearch(t *testing.T) {
 func TestMailboxesReportsOnlyTruthfulProviderMetadata(t *testing.T) {
 	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(&models.IMAPConfig{}, &models.MailConnection{}))
+	require.NoError(t, database.AutoMigrate(&models.IMAPConfig{}, &models.MailConnection{}, &models.CloudflareRelay{}))
 	googleID, customID := "google-imap", "custom-imap"
 	for _, mailbox := range []models.IMAPConfig{
 		{Base: models.Base{ID: googleID}, TeamID: "team", Username: "google@example.com", Host: "imap.gmail.com", Port: 993},

@@ -197,6 +197,7 @@ func (c *BaseController[T]) Update(ctx echo.Context) error {
 			input.Password = previous.Password
 		}
 	case *models.IMAPConfig:
+		input.ID = id
 		if input.Password == "" {
 			stored, err := c.service.Get(ctx.Request().Context(), id)
 			if err != nil {

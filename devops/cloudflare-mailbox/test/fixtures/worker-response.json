@@ -1,0 +1,19 @@
+{
+  "list": {
+    "folder_name": "INBOX", "total_emails": 1, "limit": 20, "offset": 0, "uidValidity": 42,
+    "emails": [{
+      "id": "38e1903a-316d-50ef-aa7d-1f6588e24df0", "uid": 1, "uidValidity": 42,
+      "body": "<pre>hello &lt;world&gt;</pre>", "flags": [], "to": "inbox@example.com", "cc": "", "bcc": "",
+      "from": "\"Example Sender\" <sender@example.net>", "subject": "Runtime fixture", "date": "2026-09-30T00:00:00.000Z",
+      "messageId": "<fixture@example.net>", "message_id": "<fixture@example.net>",
+      "attachments": [{"id":"879d4738-d8d7-537f-a2b6-98e816e721dc","Filename":"note.txt","MIMEType":"text/plain","size":10}], "reply_to": ""
+    }]
+  },
+  "detail": {
+    "id": "38e1903a-316d-50ef-aa7d-1f6588e24df0", "uid": 1, "uidValidity": 42,
+    "body": "<pre>hello &lt;world&gt;\n</pre>", "flags": [], "to": "inbox@example.com", "cc": "", "bcc": "",
+    "from": "\"Example Sender\" <sender@example.net>", "subject": "Runtime fixture", "date": "2026-09-30T00:00:00.000Z",
+    "messageId": "<fixture@example.net>", "message_id": "<fixture@example.net>",
+    "attachments": [{"Filename":"note.txt","MIMEType":"text/plain","Data":"YXR0YWNobWVudA=="}], "reply_to": ""
+  }
+}

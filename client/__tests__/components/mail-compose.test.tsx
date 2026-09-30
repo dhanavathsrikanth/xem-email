@@ -109,7 +109,7 @@ function button(label: string) {
   if (!result) throw new Error(`Missing button: ${label}`);
   return result;
 }
-async function render(sender?: string) {
+async function render(sender?: string, requireExplicitSender = false) {
   await act(async () =>
     root.render(
       <MailCompose
@@ -117,6 +117,7 @@ async function render(sender?: string) {
           to: "reader@example.com",
           subject: "Receipt",
           smtpConfigId: sender,
+          requireExplicitSender,
         }}
         close={mockClose}
       />,
@@ -137,6 +138,15 @@ test("missing reply identity stays unavailable instead of changing the sender", 
   await render("disconnected");
   expect(button("Send message").disabled).toBe(true);
   expect(container.textContent).toContain("original sender is unavailable");
+  expect(mockRequest).not.toHaveBeenCalled();
+});
+
+test("receive-only mailbox replies require an explicit sender choice", async () => {
+  await render(undefined, true);
+  expect(button("Send message").disabled).toBe(true);
+  expect(container.textContent).toContain(
+    "receive-only mailbox has no linked sender",
+  );
   expect(mockRequest).not.toHaveBeenCalled();
 });
 

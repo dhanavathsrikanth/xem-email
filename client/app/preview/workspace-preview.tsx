@@ -235,6 +235,15 @@ type InboxScenario =
   | "summary-retry";
 const createTransport = (scenario: InboxScenario): Transport => {
   let summaryAttempts = 0;
+  let previewRelays = [
+    {
+      id: "preview-relay",
+      mailboxId: "preview-cloudflare-mailbox",
+      address: "support@example.com",
+      workerUrl: "https://mailbox-preview.example.workers.dev",
+      enabled: true,
+    },
+  ];
   return async <T,>(path: string, method = "GET", body?: unknown) => {
     if (path === "assistant/mail-summary" && method === "POST") {
       summaryAttempts += 1;
@@ -254,6 +263,37 @@ const createTransport = (scenario: InboxScenario): Transport => {
         ],
         truncated: false,
       } as T;
+    }
+    if (path === "mail-connections/cloudflare-relays" && method === "POST") {
+      const input = body as {
+        workerUrl: string;
+        address: string;
+        secret: string;
+      };
+      const created = {
+        id: "preview-relay-new",
+        mailboxId: "preview-cloudflare-new",
+        address: input.address,
+        workerUrl: input.workerUrl,
+        enabled: true,
+      };
+      previewRelays = [...previewRelays, created];
+      return created as T;
+    }
+    if (path.endsWith("/secret") && method === "POST") {
+      const relay =
+        previewRelays.find((item) => path.includes(item.id)) ??
+        previewRelays[0];
+      relay.enabled = true;
+      return { ...relay } as T;
+    }
+    if (
+      path.startsWith("mail-connections/cloudflare-relays/") &&
+      method === "DELETE"
+    ) {
+      const relay = previewRelays.find((item) => path.endsWith(item.id));
+      if (relay) relay.enabled = false;
+      return undefined as T;
     }
     if (method !== "GET")
       throw new Error(
@@ -280,7 +320,15 @@ const createTransport = (scenario: InboxScenario): Transport => {
           host: "mail.example.org",
           provider: "CUSTOM",
         },
+        {
+          id: "preview-cloudflare-mailbox",
+          username: "support@example.com",
+          host: "relay.cloudflare.com",
+          provider: "CLOUDFLARE",
+        },
       ] as T;
+    if (path === "mail-connections/cloudflare-relays")
+      return { relays: previewRelays } as T;
     if (path === "assistant/mail-summary")
       return { enabled: scenario !== "summary-disabled" } as T;
     if (path.startsWith("imap/head")) {
@@ -290,6 +338,17 @@ const createTransport = (scenario: InboxScenario): Transport => {
         uidValidity: 1,
         latest_uid: Math.max(0, ...available.map((item) => item.uid)),
       } as T;
+    }
+    if (path.startsWith("imap/message?")) {
+      if (scenario === "error")
+        throw new Error("The preview mailbox could not be reached.");
+      const params = new URLSearchParams(path.split("?")[1]);
+      const uid = Number(params.get("uid"));
+      const message = [...previewIncoming, ...mail].find(
+        (item) => item.uid === uid,
+      );
+      if (!message) throw new Error("The preview message is unavailable.");
+      return message as T;
     }
     if (path === "mail-connections/senders")
       return [
@@ -320,13 +379,17 @@ const createTransport = (scenario: InboxScenario): Transport => {
           },
         ],
       } as T;
-    if (path.startsWith("imap/folders"))
+    if (path.startsWith("imap/folders")) {
+      const params = new URLSearchParams(path.split("?")[1]);
+      if (params.get("config_id") === "preview-cloudflare-mailbox")
+        return [{ Name: "INBOX", Total: 6 }] as T;
       return [
         { Name: "INBOX", Total: 6 },
         { Name: "Sent", Total: 24 },
         { Name: "Drafts", Total: 2 },
         { Name: "Archive", Total: 18 },
       ] as T;
+    }
     if (path.startsWith("marketing/contacts?")) {
       const params = new URLSearchParams(path.split("?")[1]);
       const search = (params.get("search") || "").toLowerCase();
@@ -412,7 +475,33 @@ const createTransport = (scenario: InboxScenario): Transport => {
                               const available = [...previewIncoming, ...mail]
                                 .filter((item) => item.uid < before)
                                 .sort((a, b) => b.uid - a.uid);
-                              const emails = available.slice(0, 20);
+                              const cloudflare =
+                                params.get("config_id") ===
+                                "preview-cloudflare-mailbox";
+                              const emails = available
+                                .slice(0, 20)
+                                .map((item) =>
+                                  cloudflare
+                                    ? {
+                                        ...item,
+                                        body: item.body
+                                          .replace(/<[^>]*>/g, " ")
+                                          .replace(/\s+/g, " ")
+                                          .trim()
+                                          .slice(0, 160),
+                                        attachments: item.attachments.map(
+                                          (attachment) => ({
+                                            Filename: attachment.Filename,
+                                            MIMEType:
+                                              "application/octet-stream",
+                                            size: Math.floor(
+                                              (attachment.Data.length * 3) / 4,
+                                            ),
+                                          }),
+                                        ),
+                                      }
+                                    : item,
+                                );
                               return {
                                 emails,
                                 total_emails:
@@ -498,6 +587,12 @@ export function WorkspacePreview() {
         onClickCapture={(event) => {
           const anchor = (event.target as HTMLElement).closest("a");
           const href = anchor?.getAttribute("href");
+          if (href === "/settings/smtp#connected-mail-cloudflare") {
+            event.preventDefault();
+            event.stopPropagation();
+            setPage("/settings/smtp");
+            return;
+          }
           if (href === "/onboarding" || href === "/settings/sending") {
             event.preventDefault();
             event.stopPropagation();

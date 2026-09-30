@@ -460,6 +460,20 @@ func RegisterCRUDRoutes(g *echo.Group, db *gorm.DB) {
 	// Protected IMAP config routes
 	imapWriteGroup := imapGroup.Group("")
 	imapWriteGroup.Use(middleware.RequirePermissions(db, "imap_configs:write"))
+	imapWriteGroup.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			if c.Param("id") != "" {
+				var count int64
+				if err := db.Model(&models.CloudflareRelay{}).Where("imap_config_id = ? AND team_id = ?", c.Param("id"), c.Get("teamID")).Count(&count).Error; err != nil {
+					return echo.NewHTTPError(500, "Unable to load mailbox")
+				}
+				if count > 0 {
+					return echo.NewHTTPError(409, "Cloudflare Worker mailboxes must be managed through mail connections")
+				}
+			}
+			return next(c)
+		}
+	})
 	// @Summary Create IMAP config
 	// @Description Create a new IMAP configuration
 	// @Accept json

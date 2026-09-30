@@ -63,6 +63,13 @@ func (h *IMAPHandler) TestConnection(c echo.Context) error {
 		return echo.NewHTTPError(400, "Invalid connection details")
 	}
 	if credentials.Password == "" && credentials.ID != "" {
+		var count int64
+		if err := h.db.Model(&models.CloudflareRelay{}).Where("imap_config_id = ? AND team_id = ?", credentials.ID, c.Get("teamID")).Count(&count).Error; err != nil {
+			return echo.NewHTTPError(500, "Unable to load mailbox")
+		}
+		if count > 0 {
+			return echo.NewHTTPError(400, "Cloudflare Worker mailboxes are tested from mail connection settings")
+		}
 		stored, err := models.GetIMAPConfig(c.Get("teamID").(string), credentials.ID, h.db.WithContext(c.Request().Context()))
 		if err != nil {
 			return echo.NewHTTPError(404, "Connection not found")
@@ -114,6 +121,9 @@ func (h *IMAPHandler) connect(c echo.Context) (*client.Client, *models.IMAPConfi
 	return im, cfg, nil
 }
 func (h *IMAPHandler) GetFolders(c echo.Context) error {
+	if handled, err := h.cloudflareFolders(c); handled {
+		return err
+	}
 	im, _, err := h.connect(c)
 	if err != nil {
 		return err
@@ -260,6 +270,9 @@ func (h *IMAPHandler) GetEmails(c echo.Context) error {
 	if folder == "" {
 		return echo.NewHTTPError(400, "Folder is required")
 	}
+	if handled, err := h.cloudflareEmails(c, p); handled {
+		return err
+	}
 	im, cfg, err := h.connect(c)
 	if err != nil {
 		return err
@@ -363,6 +376,11 @@ func (h *IMAPHandler) GetHead(c echo.Context) error {
 	if len(query) > 1024 || strings.ContainsRune(query, '\x00') {
 		return echo.NewHTTPError(400, "Search query is invalid")
 	}
+	if h.headConnect == nil {
+		if handled, err := h.cloudflareHead(c); handled {
+			return err
+		}
+	}
 	var im headIMAPClient
 	var err error
 	if h.headConnect != nil {
@@ -403,6 +421,11 @@ func (h *IMAPHandler) GetMessage(c echo.Context) error {
 	query, err := parseMessageQuery(c)
 	if err != nil {
 		return err
+	}
+	if h.messageConnect == nil {
+		if handled, err := h.cloudflareMessage(c, query); handled {
+			return err
+		}
 	}
 	var im messageIMAPClient
 	var cfg *models.IMAPConfig
@@ -501,6 +524,9 @@ func (h *IMAPHandler) ChangeFlags(c echo.Context) error {
 	}
 	if request.Flag != imap.SeenFlag && request.Flag != imap.FlaggedFlag {
 		return echo.NewHTTPError(400, "Only read and starred flags can be changed")
+	}
+	if handled, err := h.cloudflareFlags(c, request); handled {
+		return err
 	}
 	im, _, err := h.connect(c)
 	if err != nil {

@@ -28,7 +28,7 @@ func TestSavedMailPasswordCannotBeTestedAgainstAnotherEndpointOrWorkspace(t *tes
 	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	require.NoError(t, err)
 	db.DB = database
-	require.NoError(t, database.AutoMigrate(&models.SMTPConfig{}, &models.IMAPConfig{}))
+	require.NoError(t, database.AutoMigrate(&models.SMTPConfig{}, &models.IMAPConfig{}, &models.CloudflareRelay{}))
 	team := uuid.NewString()
 	smtp := models.SMTPConfig{TeamID: team, Provider: "CUSTOM", Host: "smtp.example.com", Port: 465, Username: "mail@example.com", Password: "local-password"}
 	imap := models.IMAPConfig{TeamID: team, Host: "imap.example.com", Port: 993, Username: "mail@example.com", Password: "local-password"}

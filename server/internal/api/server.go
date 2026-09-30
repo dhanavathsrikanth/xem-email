@@ -84,6 +84,11 @@ func NewServer(cfg *config.Config, db *gorm.DB) *Server {
 	} else {
 		log.Success("Successfully created super admin")
 	}
+	if err := models.SeedSuperAdminSystemTemplates(db); err != nil {
+		log.Warn("Warning: Failed to seed super-admin system templates: %v", err)
+	} else {
+		log.Success("Successfully seeded super-admin system templates")
+	}
 
 	// Initialize Redis/Valkey client for rate limiting
 	redisClient, redisErr := utils.NewRedisClient(cfg)

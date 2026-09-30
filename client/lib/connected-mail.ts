@@ -9,6 +9,7 @@ export type ComposeValue = {
   subject: string;
   inReplyTo?: string;
   smtpConfigId?: string;
+  requireExplicitSender?: boolean;
 };
 export type OutgoingAttachment = {
   filename: string;

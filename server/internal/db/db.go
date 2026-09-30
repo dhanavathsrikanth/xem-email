@@ -336,6 +336,7 @@ func runMigrations() error {
 		&models.IMAPConfig{},
 		&models.MailConnection{},
 		&models.MailOAuthState{},
+		&models.CloudflareRelay{},
 	); err != nil {
 		tx.Rollback()
 		return err

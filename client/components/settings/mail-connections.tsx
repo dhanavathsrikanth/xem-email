@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
+import { CloudflareRelays } from "./cloudflare-relay";
 
 type Connection = {
   id: string;
@@ -61,12 +62,12 @@ export function MailConnections({
         )}
         <div>
           <h2 className="font-semibold">
-            {google ? "Gmail & Google Workspace" : "Cloudflare Email Sending"}
+            {google ? "Gmail & Google Workspace" : "Cloudflare email"}
           </h2>
           <p className="text-sm text-muted-foreground mt-1">
             {google
               ? "Send emails and replies through Gmail SMTP, and receive, browse, search and read mail through IMAP. This grants your workspace access to the connected mailbox; connect only an account you are authorized to share with your team."
-              : "Send transactional emails through your Cloudflare account. Your domain must have Email Sending enabled. Campaigns and newsletters need a different sender."}
+              : "Receive mail through Email Routing without IMAP, or configure Cloudflare Email Sending for transactional outbound mail."}
           </p>
         </div>
       </div>
@@ -185,70 +186,80 @@ export function MailConnections({
               </p>
             </div>
           ) : (
-            <form
-              className="grid gap-4 sm:grid-cols-2"
-              onSubmit={(e) => {
-                e.preventDefault();
-                void run(async () => {
-                  await request("mail-connections/cloudflare", "POST", {
-                    address,
-                    accountId,
-                    token,
-                  });
-                  setToken("");
-                  setAddress("");
-                  await refresh();
-                  toast.success("Cloudflare sender saved");
-                });
-              }}
-            >
-              <div className="space-y-2">
-                <Label htmlFor="cf-sender">Sender address</Label>
-                <Input
-                  id="cf-sender"
-                  required
-                  type="email"
-                  value={address}
-                  onChange={(e) => setAddress(e.target.value)}
-                  placeholder="notifications@yourdomain.com"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="cf-account">Cloudflare account ID</Label>
-                <Input
-                  id="cf-account"
-                  required
-                  pattern="[a-fA-F0-9]{32}"
-                  maxLength={32}
-                  value={accountId}
-                  onChange={(e) => setAccountId(e.target.value)}
-                  autoComplete="off"
-                />
-              </div>
-              <div className="space-y-2 sm:col-span-2">
-                <Label htmlFor="cf-token">Email Sending API token</Label>
-                <Input
-                  id="cf-token"
-                  required
-                  type="password"
-                  minLength={16}
-                  maxLength={4096}
-                  value={token}
-                  onChange={(e) => setToken(e.target.value)}
-                  autoComplete="new-password"
-                />
-                <p className="text-xs text-muted-foreground">
-                  Use a token scoped to Email Sending for this account. Sending
-                  to arbitrary recipients requires Workers Paid; provider
-                  charges are separate from Xem.
+            <div className="space-y-5">
+              <CloudflareRelays />
+              <div>
+                <h3 className="font-semibold">Cloudflare outbound sender</h3>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Optional. This is separate from the receive-only inbox relay
+                  above.
                 </p>
               </div>
-              <div>
-                <Button type="submit" disabled={busy || !result.data}>
-                  {busy ? "Saving…" : "Save Cloudflare sender"}
-                </Button>
-              </div>
-            </form>
+              <form
+                className="grid gap-4 sm:grid-cols-2"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void run(async () => {
+                    await request("mail-connections/cloudflare", "POST", {
+                      address,
+                      accountId,
+                      token,
+                    });
+                    setToken("");
+                    setAddress("");
+                    await refresh();
+                    toast.success("Cloudflare sender saved");
+                  });
+                }}
+              >
+                <div className="space-y-2">
+                  <Label htmlFor="cf-sender">Sender address</Label>
+                  <Input
+                    id="cf-sender"
+                    required
+                    type="email"
+                    value={address}
+                    onChange={(e) => setAddress(e.target.value)}
+                    placeholder="notifications@yourdomain.com"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="cf-account">Cloudflare account ID</Label>
+                  <Input
+                    id="cf-account"
+                    required
+                    pattern="[a-fA-F0-9]{32}"
+                    maxLength={32}
+                    value={accountId}
+                    onChange={(e) => setAccountId(e.target.value)}
+                    autoComplete="off"
+                  />
+                </div>
+                <div className="space-y-2 sm:col-span-2">
+                  <Label htmlFor="cf-token">Email Sending API token</Label>
+                  <Input
+                    id="cf-token"
+                    required
+                    type="password"
+                    minLength={16}
+                    maxLength={4096}
+                    value={token}
+                    onChange={(e) => setToken(e.target.value)}
+                    autoComplete="new-password"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Use a token scoped to Email Sending for this account.
+                    Sending to arbitrary recipients requires Workers Paid;
+                    provider charges are separate from Xem.
+                  </p>
+                </div>
+                <div>
+                  <Button type="submit" disabled={busy || !result.data}>
+                    {busy ? "Saving…" : "Save Cloudflare sender"}
+                  </Button>
+                </div>
+              </form>
+            </div>
           )}
         </>
       )}

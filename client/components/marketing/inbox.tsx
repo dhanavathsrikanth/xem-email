@@ -115,6 +115,9 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
   const [search, setSearch] = useState("");
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<MailMessage | null>(null);
+  const [detailState, setDetailState] = useState<
+    "idle" | "loading" | "ready" | "error"
+  >("idle");
   const [compose, setCompose] = useState<ComposeValue | null>(null);
   const [flagBusy, setFlagBusy] = useState(false);
   const [newMailAvailable, setNewMailAvailable] = useState(false);
@@ -125,12 +128,15 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
   const loadSentinelRef = useRef<HTMLDivElement>(null);
   const generation = `${scope}:${configId}:${folder}:${query}`;
   const generationRef = useRef(generation);
+  const detailRequestRef = useRef(0);
   generationRef.current = generation;
   useEffect(() => {
     setCompose(null);
   }, [scope]);
   useEffect(() => {
     setSelected(null);
+    setDetailState("idle");
+    detailRequestRef.current += 1;
     setImages(false);
     setFlagBusy(false);
     setNewMailAvailable(false);
@@ -361,9 +367,55 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
       setSelected(null);
     }
   }, [emails.data, emails.isFetching, rows, selected]);
+  const loadMessageDetail = async (m: MailMessage) => {
+    if (
+      outbox ||
+      mailbox?.provider !== "CLOUDFLARE" ||
+      m.uid == null ||
+      m.uidValidity == null
+    ) {
+      setDetailState("ready");
+      return;
+    }
+    const requestID = ++detailRequestRef.current;
+    const requestGeneration = generation;
+    const key = messageKey(m);
+    setDetailState("loading");
+    try {
+      const detail = await request<MailMessage>(
+        `imap/message?${new URLSearchParams({
+          config_id: configId,
+          folder,
+          uid: String(m.uid),
+          uid_validity: String(m.uidValidity),
+        })}`,
+      );
+      if (
+        detailRequestRef.current !== requestID ||
+        generationRef.current !== requestGeneration
+      )
+        return;
+      if (detail.uid !== m.uid || detail.uidValidity !== m.uidValidity) {
+        setDetailState("error");
+        return;
+      }
+      setSelected((previous) =>
+        previous && messageKey(previous) === key ? detail : previous,
+      );
+      setDetailState("ready");
+    } catch {
+      if (
+        detailRequestRef.current === requestID &&
+        generationRef.current === requestGeneration
+      )
+        setDetailState("error");
+    }
+  };
   const choose = (m: MailMessage) => {
+    detailRequestRef.current += 1;
     setSelected(m);
     setImages(false);
+    void loadMessageDetail(m);
   };
   async function changeFlag(flag: string) {
     if (!current?.uid || !current.uidValidity || flagBusy) return;
@@ -407,6 +459,7 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
       to: address.match(/<([^>]+)>/)?.[1] || address,
       subject: replySubject(message.subject),
       smtpConfigId: mailbox?.smtpConfigId,
+      requireExplicitSender: !mailbox?.smtpConfigId,
       ...(!outbox && rawId
         ? { inReplyTo: rawId.startsWith("<") ? rawId : `<${rawId}>` }
         : {}),
@@ -707,6 +760,9 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
               <button
                 className={workspaceClassName("icon-button")}
                 aria-label={outbox ? "Write to recipient" : "Reply"}
+                disabled={
+                  mailbox?.provider === "CLOUDFLARE" && detailState !== "ready"
+                }
                 onClick={() => setCompose(reply(current))}
               >
                 <Reply />
@@ -715,7 +771,11 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
                 <>
                   <button
                     className={workspaceClassName("icon-button")}
-                    disabled={flagBusy}
+                    disabled={
+                      flagBusy ||
+                      (mailbox?.provider === "CLOUDFLARE" &&
+                        detailState !== "ready")
+                    }
                     aria-label={
                       current.flags?.includes("\\Seen")
                         ? "Mark unread"
@@ -732,7 +792,11 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
                   </button>
                   <button
                     className={workspaceClassName("icon-button")}
-                    disabled={flagBusy}
+                    disabled={
+                      flagBusy ||
+                      (mailbox?.provider === "CLOUDFLARE" &&
+                        detailState !== "ready")
+                    }
                     aria-label={
                       current.flags?.includes("\\Flagged")
                         ? "Unstar message"
@@ -823,64 +887,99 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
                   </>
                 )}
               </p>
-              {!outbox &&
-                current.uid != null &&
-                current.uidValidity != null && (
-                  <MailSummary
-                    configId={configId}
-                    folder={folder}
-                    uid={current.uid}
-                    uidValidity={current.uidValidity}
-                  />
+              {mailbox?.provider === "CLOUDFLARE" &&
+                detailState === "loading" && (
+                  <p role="status" className="text-sm text-muted-foreground">
+                    Loading the complete message…
+                  </p>
                 )}
-              {hasRemoteImages(current.body) && (
-                <div className={workspaceClassName("remote-images-note")}>
-                  {images
-                    ? "Remote images enabled for this message."
-                    : "Remote images are hidden to protect your privacy."}{" "}
-                  {!images && (
-                    <button onClick={() => setImages(true)}>Load images</button>
-                  )}
-                </div>
-              )}
-              <iframe
-                className={workspaceClassName("mail-body")}
-                title="Email content"
-                sandbox=""
-                referrerPolicy="no-referrer"
-                srcDoc={`<meta name="color-scheme" content="light"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${images ? "https:" : ""} data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"><style>:root{color-scheme:light}html,body{background:#fff}body{font:14px/1.8 Arial;color:#3f3b43;overflow-wrap:anywhere;margin:0;padding:16px}img{max-width:100%}</style>${current.body}`}
-              />
-              {current.attachments?.length > 0 && (
-                <section
-                  className={workspaceClassName("mail-attachment-section")}
-                >
-                  <h3>Attachments ({current.attachments.length})</h3>
-                  <div className={workspaceClassName("mail-attachments")}>
-                    {current.attachments.map((a, i) => (
-                      <a
-                        key={i}
-                        download={a.Filename}
-                        href={`data:application/octet-stream;base64,${a.Data}`}
-                      >
-                        <Paperclip size={14} />
-                        <span>
-                          <strong>{a.Filename}</strong>
-                          <small>{attachmentSize(a.Data)}</small>
-                        </span>
-                        <em>Download</em>
-                      </a>
-                    ))}
+              {mailbox?.provider === "CLOUDFLARE" &&
+                detailState === "error" && (
+                  <div role="alert" className="space-y-2 rounded-lg border p-3">
+                    <p className="text-sm">
+                      Couldn’t load the complete message. Try again before
+                      replying or using its AI summary.
+                    </p>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => void loadMessageDetail(current)}
+                    >
+                      Retry loading message
+                    </Button>
                   </div>
-                </section>
+                )}
+              {(mailbox?.provider !== "CLOUDFLARE" ||
+                detailState === "ready") && (
+                <>
+                  {!outbox &&
+                    current.uid != null &&
+                    current.uidValidity != null && (
+                      <MailSummary
+                        configId={configId}
+                        folder={folder}
+                        uid={current.uid}
+                        uidValidity={current.uidValidity}
+                      />
+                    )}
+                  {hasRemoteImages(current.body) && (
+                    <div className={workspaceClassName("remote-images-note")}>
+                      {images
+                        ? "Remote images enabled for this message."
+                        : "Remote images are hidden to protect your privacy."}{" "}
+                      {!images && (
+                        <button onClick={() => setImages(true)}>
+                          Load images
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  <iframe
+                    className={workspaceClassName("mail-body")}
+                    title="Email content"
+                    sandbox=""
+                    referrerPolicy="no-referrer"
+                    srcDoc={`<meta name="color-scheme" content="light"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${images ? "https:" : ""} data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"><style>:root{color-scheme:light}html,body{background:#fff}body{font:14px/1.8 Arial;color:#3f3b43;overflow-wrap:anywhere;margin:0;padding:16px}img{max-width:100%}</style>${current.body}`}
+                  />
+                  {current.attachments?.some(
+                    (attachment) => typeof attachment.Data === "string",
+                  ) && (
+                    <section
+                      className={workspaceClassName("mail-attachment-section")}
+                    >
+                      <h3>Attachments ({current.attachments.length})</h3>
+                      <div className={workspaceClassName("mail-attachments")}>
+                        {current.attachments
+                          .filter(
+                            (attachment) => typeof attachment.Data === "string",
+                          )
+                          .map((a, i) => (
+                            <a
+                              key={i}
+                              download={a.Filename}
+                              href={`data:application/octet-stream;base64,${a.Data}`}
+                            >
+                              <Paperclip size={14} />
+                              <span>
+                                <strong>{a.Filename}</strong>
+                                <small>{attachmentSize(a.Data)}</small>
+                              </span>
+                              <em>Download</em>
+                            </a>
+                          ))}
+                      </div>
+                    </section>
+                  )}
+                  <Button
+                    variant="outline"
+                    className="mt-5"
+                    onClick={() => setCompose(reply(current))}
+                  >
+                    <Reply />
+                    {outbox ? "Write to recipient" : "Reply to conversation"}
+                  </Button>
+                </>
               )}
-              <Button
-                variant="outline"
-                className="mt-5"
-                onClick={() => setCompose(reply(current))}
-              >
-                <Reply />
-                {outbox ? "Write to recipient" : "Reply to conversation"}
-              </Button>
             </div>
           </>
         ) : (

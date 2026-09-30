@@ -46,7 +46,10 @@ export function MailCompose({
   const confirm = useConfirmSheet();
   const senders = useMarketingQuery<MailSender[]>("mail-connections/senders");
   const [chosenSender, setChosenSender] = useState(value.smtpConfigId ?? "");
-  const selectedSender = resolveMailSender(senders.data, chosenSender);
+  const selectedSender =
+    value.requireExplicitSender && !chosenSender
+      ? undefined
+      : resolveMailSender(senders.data, chosenSender);
   const [to, setTo] = useState(value.to);
   const [subject, setSubject] = useState(value.subject);
   const [body, setBody] = useState("");
@@ -205,6 +208,12 @@ export function MailCompose({
             {chosenSender
               ? "The original sender is unavailable. Reconnect it in settings or explicitly choose another sender."
               : "Connect a sender in SMTP settings before sending."}
+          </p>
+        )}
+        {value.requireExplicitSender && !chosenSender && (
+          <p className="text-xs text-muted-foreground">
+            This receive-only mailbox has no linked sender. Choose the address
+            you want to reply from; Xem will not substitute a default identity.
           </p>
         )}
         {selectedSender?.provider === "CLOUDFLARE" && (

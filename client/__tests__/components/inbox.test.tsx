@@ -7,6 +7,7 @@ import { InboxPage } from "@/components/marketing/inbox";
 
 const mockRequest = jest.fn();
 let mailboxBFirst = false;
+let cloudflareMailbox = false;
 jest.mock("@/lib/marketing/api", () => ({
   PreviewTransport: React.createContext(null),
   useMarketing: () => ({ request: mockRequest, scope: "team", ready: true }),
@@ -24,6 +25,7 @@ jest.mock("@/lib/marketing/api", () => ({
                   id: "mailbox-a",
                   username: "a@example.com",
                   host: "imap.example.com",
+                  provider: cloudflareMailbox ? "CLOUDFLARE" : "CUSTOM",
                 },
               ]
             : [
@@ -31,6 +33,7 @@ jest.mock("@/lib/marketing/api", () => ({
                   id: "mailbox-a",
                   username: "a@example.com",
                   host: "imap.example.com",
+                  provider: cloudflareMailbox ? "CLOUDFLARE" : "CUSTOM",
                 },
                 {
                   id: "mailbox-b",
@@ -47,7 +50,7 @@ jest.mock("@/components/marketing/mail-compose", () => ({
   MailCompose: () => null,
 }));
 jest.mock("@/components/marketing/mail-summary", () => ({
-  MailSummary: () => null,
+  MailSummary: () => <div data-testid="mail-summary" />,
 }));
 jest.mock("sonner", () => ({ toast: { error: jest.fn() } }));
 
@@ -100,6 +103,7 @@ beforeAll(() => {
 beforeEach(() => {
   jest.clearAllMocks();
   mailboxBFirst = false;
+  cloudflareMailbox = false;
   queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 } },
   });
@@ -241,4 +245,90 @@ test("loads older mail with the server cursor", async () => {
     ),
   ).toBe(true);
   expect(container.textContent).toContain("Older message");
+});
+
+test("ignores a stale Cloudflare detail response after selecting another message", async () => {
+  cloudflareMailbox = true;
+  const details = new Map<number, (value: unknown) => void>();
+  mockRequest.mockImplementation((path: string) => {
+    const params = new URLSearchParams(path.split("?")[1]);
+    if (path.startsWith("imap/message?"))
+      return new Promise((resolve) =>
+        details.set(Number(params.get("uid")), resolve),
+      );
+    return Promise.resolve({
+      emails: messages["mailbox-a"],
+      total_emails: 2,
+      offset: 0,
+      limit: 20,
+      uidValidity: 1,
+    });
+  });
+  await renderInbox();
+  await act(async () => button("A plain").click());
+  expect(container.textContent).toContain("Loading the complete message");
+  await act(async () => button("A starred").click());
+  await act(async () =>
+    details.get(8)?.({
+      ...messages["mailbox-a"][0],
+      body: "<p>Stale full body</p>",
+    }),
+  );
+  expect(
+    container.querySelector(".mail-subject-heading")?.textContent,
+  ).toContain("A starred");
+  expect(container.querySelector('iframe[title="Email content"]')).toBeNull();
+  await act(async () =>
+    details.get(9)?.({
+      ...messages["mailbox-a"][1],
+      body: "<p>Current full body</p>",
+    }),
+  );
+  expect(
+    container
+      .querySelector('iframe[title="Email content"]')
+      ?.getAttribute("srcdoc"),
+  ).toContain("Current full body");
+  expect(
+    container.querySelector('[data-testid="mail-summary"]'),
+  ).not.toBeNull();
+});
+
+test("retries a failed Cloudflare detail request before enabling reply and downloads", async () => {
+  cloudflareMailbox = true;
+  let attempts = 0;
+  mockRequest.mockImplementation((path: string) => {
+    if (path.startsWith("imap/message?")) {
+      attempts += 1;
+      if (attempts === 1) return Promise.reject(new Error("offline"));
+      return Promise.resolve({
+        ...messages["mailbox-a"][0],
+        body: "<p>Complete body</p>",
+        attachments: [{ Filename: "brief.txt", Data: "aGVsbG8=" }],
+      });
+    }
+    return Promise.resolve({
+      emails: messages["mailbox-a"],
+      total_emails: 2,
+      offset: 0,
+      limit: 20,
+      uidValidity: 1,
+    });
+  });
+  await renderInbox();
+  await act(async () => button("A plain").click());
+  await settle();
+  expect(container.textContent).toContain("Couldn’t load the complete message");
+  expect(button("Reply").disabled).toBe(true);
+  expect(container.querySelector('[data-testid="mail-summary"]')).toBeNull();
+  await act(async () => button("Retry loading message").click());
+  await settle();
+  expect(button("Reply").disabled).toBe(false);
+  expect(
+    container.querySelector('[data-testid="mail-summary"]'),
+  ).not.toBeNull();
+  const download = container.querySelector('a[download="brief.txt"]');
+  expect(download?.getAttribute("href")).toBe(
+    "data:application/octet-stream;base64,aGVsbG8=",
+  );
 });

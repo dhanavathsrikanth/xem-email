@@ -1,0 +1,9 @@
+.dev.vars
+.dev.vars.*
+.env
+.env.local
+.wrangler/
+dist/
+coverage/
+test-results/
+.tmp/

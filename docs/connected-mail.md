@@ -1,6 +1,6 @@
 # Connected mail: Gmail, Workspace, IMAP, and Cloudflare
 
-This change adds Google mailbox OAuth and Cloudflare transactional sending to Xem's existing Go backend. It also fixes IMAP pagination, search, folder listing, and message identity. Deploy the backend migration before the client. These connectors do not require a paid Xem entitlement.
+This change adds Google mailbox OAuth, Cloudflare transactional sending, and an optional customer-owned Cloudflare inbound mailbox. It also fixes IMAP pagination, search, folder listing, and message identity. Deploy the backend migration before the client. These connectors do not require a paid Xem entitlement.
 
 ## Google mailbox setup
 
@@ -64,9 +64,15 @@ Cloudflare currently supports **transactional email only**. Campaigns/newsletter
 
 Cloudflare's documented limits, checked September 28, 2026: 50 combined recipients, 5 MiB message size, 998-character subject, and 16 KiB custom headers. Arbitrary recipients require Workers Paid. The documented account allowance is 3,000 sends/month, then $0.35 per 1,000; Workers plan charges and provider usage are separate from Xem. Recheck the provider links below before quoting prices to customers.
 
-Xem calls Cloudflare's REST API directly. The Go backend, database, and dashboard stay on the existing deployment. No Worker/D1/R2 migration is required. This release does **not** add Cloudflare inbound routing or stored Cloudflare mailboxes.
+Xem calls Cloudflare's REST API directly for outbound sending. That sender does not require a Worker, D1, or R2.
 
-### Delivery status
+## Customer-owned Cloudflare inbound mailbox
+
+The optional inbound mailbox is a separate deployment. Cloudflare Email Routing invokes a Worker, private R2 stores raw MIME, bodies, and attachments, and D1 stores the mailbox index and flags. Xem's backend accesses it through a signed API; the browser receives neither the mailbox secret nor a Cloudflare API token.
+
+Follow [the mailbox setup guide](../devops/cloudflare-mailbox/README.md). Apply its D1 migration and the Xem backend migration before connecting the mailbox or switching routes in the UI. Each deployment accepts one exact `MAILBOX_ADDRESS`, rejects raw messages larger than 10 MiB, and does not automatically delete received or quarantined mail. This implementation has local tests and a Wrangler dry run; a production claim still requires an account-specific deployment and live Email Routing validation.
+
+## Outbound delivery status
 
 | Xem status         | Meaning                                                                                                                                        |
 | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -105,6 +111,14 @@ The summary response is returned to the requesting browser and is not written to
 The summary model has no tools and cannot send, reply, change flags, follow links, or modify workspace data. Email content is handled as untrusted quoted data, and output is limited to a summary, supported key points, and explicit action items. These controls reduce prompt-injection risk but do not guarantee factual model output; users should verify summaries against the original message.
 
 `XEM_MAIL_SUMMARY_ENABLED` is separate from `GOOGLE_MAIL_ACCESS`. Keep Google mailbox access in `testing` or `disabled` until the applicable Google verification is complete. Enabling summaries does not make Google authorization production-ready, and enabling Google mailbox access does not enable summaries.
+
+## Root-admin email templates
+
+On backend startup, every workspace containing a super admin receives saved, editable copies of the 18 branded Xem system emails: nine managed-sending onboarding messages and nine welcome, account-security, and delivery-alert messages. This also backfills existing root accounts; bootstrap credentials do not need to be set again. Open **Templates** after the updated backend starts.
+
+Seeding uses stable identities, preserves existing edits and intentionally deleted templates, and does not populate ordinary workspaces or send email. These are library copies: editing them does not override the canonical templates used by automatic system notifications.
+
+If the Transactional category was intentionally deleted, startup reports a seeding warning and preserves that deletion. Create or restore an active Transactional category and restart the backend to populate missing templates.
 
 ## Release acceptance
 
