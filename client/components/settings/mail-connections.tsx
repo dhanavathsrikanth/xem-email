@@ -56,9 +56,9 @@ export function MailConnections({
     >
       <div className="flex gap-3 items-start">
         {google ? (
-          <Mail className="size-5 mt-1" />
+          <Mail className="mt-1 size-5 shrink-0" />
         ) : (
-          <Cloud className="size-5 mt-1" />
+          <Cloud className="mt-1 size-5 shrink-0" />
         )}
         <div>
           <h2 className="font-semibold">
@@ -66,15 +66,20 @@ export function MailConnections({
           </h2>
           <p className="text-sm text-muted-foreground mt-1">
             {google
-              ? "Send emails and replies through Gmail SMTP, and receive, browse, search and read mail through IMAP. This grants your workspace access to the connected mailbox; connect only an account you are authorized to share with your team."
+              ? "Send emails and replies through Gmail SMTP, and browse, search and manage mail through the Gmail API. This grants your workspace access to the connected mailbox; connect only an account you are authorized to share with your team."
               : "Receive mail through Email Routing without IMAP, or configure Cloudflare Email Sending for transactional outbound mail."}
           </p>
         </div>
       </div>
       {result.error ? (
-        <p role="alert" className="text-sm text-muted-foreground">
-          {result.error.message}
-        </p>
+        <div role="alert" className="space-y-2">
+          <p className="text-sm text-muted-foreground">
+            Couldn’t load mailbox connections. {result.error.message}
+          </p>
+          <Button size="sm" variant="outline" onClick={() => result.refetch()}>
+            Retry
+          </Button>
+        </div>
       ) : (
         <>
           {connections.map((connection) => (
@@ -157,7 +162,11 @@ export function MailConnections({
                   })
                 }
               >
-                {busy ? "Opening Google…" : "Connect Google mailbox"}
+                {busy
+                  ? "Opening Google…"
+                  : connections.length
+                    ? "Connect another Google mailbox"
+                    : "Connect Google mailbox"}
               </Button>
               {result.data && !result.data.googleConfigured && (
                 <p className="text-xs text-muted-foreground">
@@ -175,15 +184,25 @@ export function MailConnections({
                   </p>
                 )}
               <p className="text-xs text-muted-foreground">
-                Requires Google’s mail scope for IMAP/SMTP. Workspace
-                administrators may need to allow access. Google sign-in is
-                separate. Xem stores tokens encrypted and never asks for your
-                Google password. Incoming mail is fetched on demand; outgoing
-                messages and attachments are saved in Xem. Connecting does not
-                automatically send your inbox to AI. If you choose an AI writing
-                or assistant action, its inputs and relevant workspace data may
-                be sent to the configured AI service.
+                You’ll continue on Google to choose an account and approve
+                mailbox access, then return to Xem. No email is sent when you
+                connect.
               </p>
+              <details className="rounded-lg border px-3 py-2 text-xs text-muted-foreground">
+                <summary className="cursor-pointer font-medium text-foreground">
+                  Privacy and access details
+                </summary>
+                <p className="mt-2 leading-5">
+                  Requires Google’s Gmail read and update access. Workspace
+                  administrators may need to allow access. Google sign-in is
+                  separate. Xem stores tokens encrypted and never asks for your
+                  Google password. Incoming mail is fetched on demand; outgoing
+                  messages and attachments are saved in Xem. Connecting does not
+                  automatically send your inbox to AI. If you choose an AI
+                  writing or assistant action, its inputs and relevant workspace
+                  data may be sent to the configured AI service.
+                </p>
+              </details>
             </div>
           ) : (
             <div className="space-y-5">

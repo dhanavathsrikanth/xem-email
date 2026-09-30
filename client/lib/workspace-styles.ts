@@ -637,7 +637,10 @@ const recipes: Record<string, string> = {
   `,
   "mail-attachments": String.raw`
     flex flex-wrap [gap:10px] [margin-top:11px]
-    [&_a]:flex [&_a]:items-center [&_a]:[gap:11px] [&_a]:[min-width:240px] [&_a]:[max-width:360px] [&_a]:[border:1px_solid_var(--border)] [&_a]:[border-radius:11px] [&_a]:[padding:15px] [&_a]:[font-size:11px] [&_a]:[color:var(--foreground)] [&_a]:[overflow-wrap:anywhere] [&_a_>_span]:[min-width:0] [&_a_>_span]:[flex:1] [&_a_strong]:block [&_a_strong]:[overflow-wrap:anywhere] [&_a_small]:block [&_a_small]:[margin-top:4px] [&_a_small]:[color:var(--muted-foreground)] [&_a_em]:not-italic [&_a_em]:[color:var(--foreground)] [&_a_em]:font-medium [&_a_em]:underline [&_a_em]:[text-underline-offset:2px]
+  `,
+  "mail-attachment": String.raw`
+    flex items-center text-left [gap:11px] [min-width:240px] [max-width:360px] [border:1px_solid_var(--border)] [border-radius:11px] [padding:15px] [font-size:11px] [color:var(--foreground)] [overflow-wrap:anywhere] disabled:opacity-60
+    [&_>_span]:[min-width:0] [&_>_span]:[flex:1] [&_strong]:block [&_strong]:[overflow-wrap:anywhere] [&_small]:block [&_small]:[margin-top:4px] [&_small]:[color:var(--muted-foreground)] [&_em]:not-italic [&_em]:[color:var(--foreground)] [&_em]:font-medium [&_em]:underline [&_em]:[text-underline-offset:2px]
   `,
   "mail-attachment-section": String.raw`
     [padding-top:20px] [margin-top:20px] [border-top:1px_solid_var(--border)] [&_h3]:[font-size:13px] [&_h3]:font-medium

@@ -13,11 +13,18 @@ export type MailSummaryResult = {
 type Props = {
   configId: string;
   folder: string;
-  uid: number;
-  uidValidity: number;
-};
+} & (
+  | { providerMessageId: string; uid?: never; uidValidity?: never }
+  | { providerMessageId?: never; uid: number; uidValidity: number }
+);
 
-export function MailSummary({ configId, folder, uid, uidValidity }: Props) {
+export function MailSummary({
+  configId,
+  folder,
+  providerMessageId,
+  uid,
+  uidValidity,
+}: Props) {
   const { scope } = useMarketing();
   const preview = useContext(PreviewTransport);
   const [enabled, setEnabled] = useState<boolean | null>(null);
@@ -70,7 +77,16 @@ export function MailSummary({ configId, folder, uid, uidValidity }: Props) {
           );
       });
     return () => next.abort();
-  }, [preview, scope, configId, folder, uid, uidValidity, availabilityAttempt]);
+  }, [
+    preview,
+    scope,
+    configId,
+    folder,
+    providerMessageId,
+    uid,
+    uidValidity,
+    availabilityAttempt,
+  ]);
 
   useEffect(() => {
     controller.current?.abort();
@@ -79,7 +95,7 @@ export function MailSummary({ configId, folder, uid, uidValidity }: Props) {
     setError("");
     setLoading(false);
     return () => controller.current?.abort();
-  }, [scope, configId, folder, uid, uidValidity]);
+  }, [scope, configId, folder, providerMessageId, uid, uidValidity]);
 
   const cancel = () => {
     controller.current?.abort();
@@ -96,7 +112,9 @@ export function MailSummary({ configId, folder, uid, uidValidity }: Props) {
     try {
       const summary = await send<MailSummaryResult>(
         "POST",
-        { configId, folder, uid, uidValidity },
+        providerMessageId
+          ? { configId, folder, providerMessageId }
+          : { configId, folder, uid, uidValidity },
         next.signal,
       );
       if (

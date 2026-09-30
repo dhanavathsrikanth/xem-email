@@ -37,6 +37,7 @@ type IMAPHandler struct {
 	db             *gorm.DB
 	messageConnect func(echo.Context) (messageIMAPClient, *models.IMAPConfig, error)
 	headConnect    func(echo.Context) (headIMAPClient, error)
+	gmailConnect   func(echo.Context) (gmailMailboxAPI, *models.IMAPConfig, bool, error)
 }
 
 func mailboxAddresses(addresses []*mail.Address) string {
@@ -44,6 +45,13 @@ func mailboxAddresses(addresses []*mail.Address) string {
 		return ""
 	}
 	return utils.FormatAddresses(addresses)
+}
+
+func mailboxDate(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.Format(time.RFC3339)
 }
 
 func NewIMAPHandler(db *gorm.DB) *IMAPHandler { return &IMAPHandler{db: db} }
@@ -107,11 +115,7 @@ func (h *IMAPHandler) connect(c echo.Context) (*client.Client, *models.IMAPConfi
 		if connection.Provider != mailconnect.Google {
 			return nil, nil, echo.NewHTTPError(400, "Unsupported mailbox provider")
 		}
-		token, tokenErr := mailconnect.GoogleToken(c.Request().Context(), h.db, connection)
-		if tokenErr != nil {
-			return nil, nil, echo.NewHTTPError(409, "Google authorization needs attention. Reconnect in settings.")
-		}
-		im, err = utils.DialIMAPAuth(c.Request().Context(), "imap.gmail.com", 993, connection.Address, mailconnect.XOAUTH2{Username: connection.Address, Token: token})
+		return nil, nil, echo.NewHTTPError(500, "Google mailbox must use the Gmail API")
 	} else {
 		im, err = utils.DialIMAP(c.Request().Context(), cfg.Host, cfg.Port, cfg.Username, cfg.Password)
 	}
@@ -121,8 +125,21 @@ func (h *IMAPHandler) connect(c echo.Context) (*client.Client, *models.IMAPConfi
 	return im, cfg, nil
 }
 func (h *IMAPHandler) GetFolders(c echo.Context) error {
+	if h.gmailConnect != nil {
+		gmail, _, _, err := h.gmail(c)
+		if err != nil {
+			return err
+		}
+		return h.gmailFolders(c, gmail)
+	}
 	if handled, err := h.cloudflareFolders(c); handled {
 		return err
+	}
+	if gmail, _, handled, err := h.gmail(c); handled {
+		if err != nil {
+			return err
+		}
+		return h.gmailFolders(c, gmail)
 	}
 	im, _, err := h.connect(c)
 	if err != nil {
@@ -258,6 +275,13 @@ func mailCriteria(c echo.Context) (*imap.SearchCriteria, error) {
 	return criteria, nil
 }
 func (h *IMAPHandler) GetEmails(c echo.Context) error {
+	if h.gmailConnect != nil {
+		gmail, cfg, _, gmailErr := h.gmail(c)
+		if gmailErr != nil {
+			return gmailErr
+		}
+		return h.gmailEmails(c, gmail, cfg)
+	}
 	p, err := parseMailPagination(c)
 	if err != nil {
 		return err
@@ -272,6 +296,12 @@ func (h *IMAPHandler) GetEmails(c echo.Context) error {
 	}
 	if handled, err := h.cloudflareEmails(c, p); handled {
 		return err
+	}
+	if gmail, cfg, handled, gmailErr := h.gmail(c); handled {
+		if gmailErr != nil {
+			return gmailErr
+		}
+		return h.gmailEmails(c, gmail, cfg)
 	}
 	im, cfg, err := h.connect(c)
 	if err != nil {
@@ -349,7 +379,7 @@ func (h *IMAPHandler) GetEmails(c echo.Context) error {
 		if flags == nil {
 			flags = []string{}
 		}
-		indexed[message.Uid] = EmailMessage{ID: fmt.Sprintf("%s:%s:%d:%d", cfg.ID, folder, status.UidValidity, message.Uid), UID: message.Uid, UIDValidity: status.UidValidity, Body: body, Flags: flags, Attachments: parsed.Attachments, From: mailboxAddresses(parsed.From), To: mailboxAddresses(parsed.To), Cc: mailboxAddresses(parsed.Cc), Bcc: mailboxAddresses(parsed.Bcc), ReplyTo: mailboxAddresses(parsed.ReplyTo), Subject: parsed.Subject, Date: parsed.Date.Format(time.RFC3339), MessageID: parsed.MessageID, LegacyMessageID: parsed.MessageID}
+		indexed[message.Uid] = EmailMessage{ID: fmt.Sprintf("%s:%s:%d:%d", cfg.ID, folder, status.UidValidity, message.Uid), UID: message.Uid, UIDValidity: status.UidValidity, Body: body, Flags: flags, Attachments: parsed.Attachments, From: mailboxAddresses(parsed.From), To: mailboxAddresses(parsed.To), Cc: mailboxAddresses(parsed.Cc), Bcc: mailboxAddresses(parsed.Bcc), ReplyTo: mailboxAddresses(parsed.ReplyTo), Subject: parsed.Subject, Date: mailboxDate(parsed.Date), MessageID: parsed.MessageID, LegacyMessageID: parsed.MessageID}
 	}
 	if err := <-done; err != nil {
 		return echo.NewHTTPError(502, "Unable to fetch mailbox messages")
@@ -377,8 +407,21 @@ func (h *IMAPHandler) GetHead(c echo.Context) error {
 		return echo.NewHTTPError(400, "Search query is invalid")
 	}
 	if h.headConnect == nil {
+		if h.gmailConnect != nil {
+			gmail, _, _, err := h.gmail(c)
+			if err != nil {
+				return err
+			}
+			return h.gmailHead(c, gmail)
+		}
 		if handled, err := h.cloudflareHead(c); handled {
 			return err
+		}
+		if gmail, _, handled, err := h.gmail(c); handled {
+			if err != nil {
+				return err
+			}
+			return h.gmailHead(c, gmail)
 		}
 	}
 	var im headIMAPClient
@@ -418,14 +461,34 @@ func (h *IMAPHandler) GetHead(c echo.Context) error {
 // It never accepts message content from the caller and does not expose
 // attachment bytes. BODY.PEEK and a read-only mailbox keep retrieval inert.
 func (h *IMAPHandler) GetMessage(c echo.Context) error {
+	if h.messageConnect == nil {
+		if h.gmailConnect != nil {
+			gmail, cfg, _, err := h.gmail(c)
+			if err != nil {
+				return err
+			}
+			return h.gmailMessage(c, gmail, cfg)
+		}
+		if relay, _, relayErr := h.cloudflareRelay(c); relayErr != nil {
+			return relayErr
+		} else if relay != nil {
+			query, err := parseMessageQuery(c)
+			if err != nil {
+				return err
+			}
+			_, err = h.cloudflareMessage(c, query)
+			return err
+		}
+		if gmail, cfg, handled, gmailErr := h.gmail(c); handled {
+			if gmailErr != nil {
+				return gmailErr
+			}
+			return h.gmailMessage(c, gmail, cfg)
+		}
+	}
 	query, err := parseMessageQuery(c)
 	if err != nil {
 		return err
-	}
-	if h.messageConnect == nil {
-		if handled, err := h.cloudflareMessage(c, query); handled {
-			return err
-		}
 	}
 	var im messageIMAPClient
 	var cfg *models.IMAPConfig
@@ -496,7 +559,7 @@ func (h *IMAPHandler) GetMessage(c echo.Context) error {
 		if flags == nil {
 			flags = []string{}
 		}
-		value := EmailMessage{ID: fmt.Sprintf("%s:%s:%d:%d", cfg.ID, query.Folder, status.UidValidity, message.Uid), UID: message.Uid, UIDValidity: status.UidValidity, Body: body, Flags: flags, From: mailboxAddresses(parsed.From), To: mailboxAddresses(parsed.To), Cc: mailboxAddresses(parsed.Cc), Bcc: mailboxAddresses(parsed.Bcc), ReplyTo: mailboxAddresses(parsed.ReplyTo), Subject: parsed.Subject, Date: parsed.Date.Format(time.RFC3339), MessageID: parsed.MessageID, LegacyMessageID: parsed.MessageID}
+		value := EmailMessage{ID: fmt.Sprintf("%s:%s:%d:%d", cfg.ID, query.Folder, status.UidValidity, message.Uid), UID: message.Uid, UIDValidity: status.UidValidity, Body: body, Flags: flags, From: mailboxAddresses(parsed.From), To: mailboxAddresses(parsed.To), Cc: mailboxAddresses(parsed.Cc), Bcc: mailboxAddresses(parsed.Bcc), ReplyTo: mailboxAddresses(parsed.ReplyTo), Subject: parsed.Subject, Date: mailboxDate(parsed.Date), MessageID: parsed.MessageID, LegacyMessageID: parsed.MessageID}
 		result = &value
 	}
 	if err := <-done; err != nil {
@@ -511,6 +574,23 @@ func (h *IMAPHandler) GetMessage(c echo.Context) error {
 // ChangeFlags addresses a message by UID and UIDVALIDITY, never by its changing
 // sequence number. It cannot permanently delete messages or expunge a mailbox.
 func (h *IMAPHandler) ChangeFlags(c echo.Context) error {
+	if h.gmailConnect == nil {
+		if relay, _, relayErr := h.cloudflareRelay(c); relayErr != nil {
+			return relayErr
+		} else if relay != nil {
+			return h.changeLegacyFlags(c, true)
+		}
+	}
+	if gmail, _, handled, gmailErr := h.gmail(c); handled {
+		if gmailErr != nil {
+			return gmailErr
+		}
+		return h.gmailFlags(c, gmail)
+	}
+	return h.changeLegacyFlags(c, false)
+}
+
+func (h *IMAPHandler) changeLegacyFlags(c echo.Context, cloudflare bool) error {
 	var request struct {
 		Folder      string `json:"folder"`
 		UID         uint32 `json:"uid"`
@@ -525,7 +605,8 @@ func (h *IMAPHandler) ChangeFlags(c echo.Context) error {
 	if request.Flag != imap.SeenFlag && request.Flag != imap.FlaggedFlag {
 		return echo.NewHTTPError(400, "Only read and starred flags can be changed")
 	}
-	if handled, err := h.cloudflareFlags(c, request); handled {
+	if cloudflare {
+		_, err := h.cloudflareFlags(c, request)
 		return err
 	}
 	im, _, err := h.connect(c)
@@ -553,28 +634,33 @@ func (h *IMAPHandler) ChangeFlags(c echo.Context) error {
 }
 
 type FolderData struct {
-	FolderName    string         `json:"folder_name"`
-	TotalEmails   int            `json:"total_emails"`
-	Limit         int            `json:"limit"`
-	Offset        int            `json:"offset"`
-	UIDValidity   uint32         `json:"uidValidity"`
-	NextBeforeUID *uint32        `json:"next_before_uid,omitempty"`
-	Emails        []EmailMessage `json:"emails"`
+	FolderName      string         `json:"folder_name"`
+	TotalEmails     int            `json:"total_emails"`
+	Limit           int            `json:"limit"`
+	Offset          int            `json:"offset"`
+	UIDValidity     uint32         `json:"uidValidity"`
+	NextBeforeUID   *uint32        `json:"next_before_uid,omitempty"`
+	NextPageToken   string         `json:"next_page_token,omitempty"`
+	HistoryID       string         `json:"history_id,omitempty"`
+	TotalIsEstimate bool           `json:"total_is_estimate,omitempty"`
+	Emails          []EmailMessage `json:"emails"`
 }
 type EmailMessage struct {
-	ID              string                  `json:"id"`
-	UID             uint32                  `json:"uid"`
-	UIDValidity     uint32                  `json:"uidValidity"`
-	Body            string                  `json:"body"`
-	Flags           []string                `json:"flags"`
-	To              string                  `json:"to"`
-	Cc              string                  `json:"cc"`
-	Bcc             string                  `json:"bcc"`
-	From            string                  `json:"from"`
-	Subject         string                  `json:"subject"`
-	Date            string                  `json:"date"`
-	MessageID       string                  `json:"messageId"`
-	LegacyMessageID string                  `json:"message_id"`
-	Attachments     []utils.EmailAttachment `json:"attachments,omitempty"`
-	ReplyTo         string                  `json:"reply_to"`
+	ID                string                  `json:"id"`
+	UID               uint32                  `json:"uid"`
+	UIDValidity       uint32                  `json:"uidValidity"`
+	Body              string                  `json:"body"`
+	Flags             []string                `json:"flags"`
+	To                string                  `json:"to"`
+	Cc                string                  `json:"cc"`
+	Bcc               string                  `json:"bcc"`
+	From              string                  `json:"from"`
+	Subject           string                  `json:"subject"`
+	Date              string                  `json:"date"`
+	MessageID         string                  `json:"messageId"`
+	LegacyMessageID   string                  `json:"message_id"`
+	ProviderMessageID string                  `json:"providerMessageId,omitempty"`
+	Warning           string                  `json:"warning,omitempty"`
+	Attachments       []utils.EmailAttachment `json:"attachments,omitempty"`
+	ReplyTo           string                  `json:"reply_to"`
 }

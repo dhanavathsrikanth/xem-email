@@ -56,3 +56,22 @@ func TestCORSOrigins(t *testing.T) {
 		})
 	}
 }
+
+func TestCORSAllowsMailboxFlagPatch(t *testing.T) {
+	t.Setenv("CORS_ALLOWED_ORIGINS", "https://app.xem.email")
+	e := echo.New()
+	e.Use(echomiddleware.CORSWithConfig(corsConfig()))
+	e.PATCH("/api/v1/imap/flags", func(c echo.Context) error { return c.NoContent(http.StatusNoContent) })
+
+	req := httptest.NewRequest(http.MethodOptions, "/api/v1/imap/flags", nil)
+	req.Header.Set(echo.HeaderOrigin, "https://app.xem.email")
+	req.Header.Set(echo.HeaderAccessControlRequestMethod, http.MethodPatch)
+	req.Header.Set(echo.HeaderAccessControlRequestHeaders, "content-type,authorization")
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	require.Equal(t, "https://app.xem.email", rec.Header().Get(echo.HeaderAccessControlAllowOrigin))
+	require.Contains(t, rec.Header().Get(echo.HeaderAccessControlAllowMethods), http.MethodPatch)
+	require.Contains(t, rec.Header().Get(echo.HeaderAccessControlAllowHeaders), "Authorization")
+}

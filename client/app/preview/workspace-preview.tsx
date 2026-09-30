@@ -233,8 +233,31 @@ type InboxScenario =
   | "error"
   | "summary-disabled"
   | "summary-retry";
-const createTransport = (scenario: InboxScenario): Transport => {
+type GoogleScenario =
+  | "connected"
+  | "fresh"
+  | "pending"
+  | "unconfigured"
+  | "restricted"
+  | "error";
+const createTransport = (
+  scenario: InboxScenario,
+  googleScenario: GoogleScenario,
+): Transport => {
   let summaryAttempts = 0;
+  let previewHistoryChecks = 0;
+  let previewGoogleConnections =
+    googleScenario === "connected"
+      ? [
+          {
+            id: "preview-google",
+            provider: "GOOGLE_OAUTH",
+            address: "alex@example.com",
+            smtpConfigId: "preview-sender",
+            imapConfigId: "preview-mailbox",
+          },
+        ]
+      : [];
   let previewRelays = [
     {
       id: "preview-relay",
@@ -279,6 +302,16 @@ const createTransport = (scenario: InboxScenario): Transport => {
       };
       previewRelays = [...previewRelays, created];
       return created as T;
+    }
+    if (path === "mail-connections/google/start" && method === "POST") {
+      if (googleScenario === "pending") return await new Promise<T>(() => {});
+      return { url: "https://accounts.google.com/o/oauth2/v2/auth" } as T;
+    }
+    if (path === "mail-connections/preview-google" && method === "DELETE") {
+      previewGoogleConnections = previewGoogleConnections.filter(
+        (connection) => !path.endsWith(connection.id),
+      );
+      return undefined as T;
     }
     if (path.endsWith("/secret") && method === "POST") {
       const relay =
@@ -332,6 +365,17 @@ const createTransport = (scenario: InboxScenario): Transport => {
     if (path === "assistant/mail-summary")
       return { enabled: scenario !== "summary-disabled" } as T;
     if (path.startsWith("imap/head")) {
+      const params = new URLSearchParams(path.split("?")[1]);
+      if (params.get("config_id") === `preview-mailbox-${scenario}`) {
+        previewHistoryChecks += 1;
+        return {
+          history_id:
+            previewHistoryChecks > 1
+              ? "preview-history-2"
+              : "preview-history-1",
+          changed: previewHistoryChecks > 1,
+        } as T;
+      }
       const available = [...previewIncoming, ...mail];
       return {
         total_emails: available.length,
@@ -343,12 +387,46 @@ const createTransport = (scenario: InboxScenario): Transport => {
       if (scenario === "error")
         throw new Error("The preview mailbox could not be reached.");
       const params = new URLSearchParams(path.split("?")[1]);
-      const uid = Number(params.get("uid"));
+      const nativeID = params.get("message_id");
+      const uid = nativeID
+        ? Number(nativeID.replace("gmail-", ""))
+        : Number(params.get("uid"));
       const message = [...previewIncoming, ...mail].find(
         (item) => item.uid === uid,
       );
       if (!message) throw new Error("The preview message is unavailable.");
-      return message as T;
+      return {
+        ...message,
+        ...(nativeID
+          ? {
+              id: `${params.get("config_id")}:gmail:${nativeID}`,
+              providerMessageId: nativeID,
+              uid: undefined,
+              uidValidity: undefined,
+              attachments: message.attachments.map((attachment, index) => ({
+                Filename: attachment.Filename,
+                MIMEType: "application/octet-stream",
+                Size: Math.floor((attachment.Data.length * 3) / 4),
+                AttachmentID: `attachment-${uid}-${index}`,
+              })),
+            }
+          : {}),
+      } as T;
+    }
+    if (path.startsWith("imap/attachment?")) {
+      const params = new URLSearchParams(path.split("?")[1]);
+      const match = params
+        .get("attachment_id")
+        ?.match(/^attachment-(\d+)-(\d+)$/);
+      const message = match
+        ? [...previewIncoming, ...mail].find(
+            (item) => item.uid === Number(match[1]),
+          )
+        : undefined;
+      const attachment = message?.attachments[Number(match?.[2])];
+      if (!attachment)
+        throw new Error("The preview attachment is unavailable.");
+      return { Data: attachment.Data } as T;
     }
     if (path === "mail-connections/senders")
       return [
@@ -365,22 +443,29 @@ const createTransport = (scenario: InboxScenario): Transport => {
           isDefault: false,
         },
       ] as T;
-    if (path === "mail-connections")
+    if (path === "mail-connections") {
+      if (googleScenario === "error")
+        throw new Error("The preview could not load Google connections.");
       return {
-        googleConfigured: true,
-        googleAvailable: true,
-        connections: [
-          {
-            id: "preview-google",
-            provider: "GOOGLE_OAUTH",
-            address: "alex@example.com",
-            smtpConfigId: "preview-sender",
-            imapConfigId: "preview-mailbox",
-          },
-        ],
+        googleConfigured: googleScenario !== "unconfigured",
+        googleAvailable:
+          googleScenario !== "unconfigured" && googleScenario !== "restricted",
+        connections: previewGoogleConnections,
       } as T;
+    }
     if (path.startsWith("imap/folders")) {
       const params = new URLSearchParams(path.split("?")[1]);
+      if (params.get("config_id") === `preview-mailbox-${scenario}`)
+        return [
+          { Name: "INBOX", DisplayName: "Inbox", Attributes: [] },
+          { Name: "SENT", DisplayName: "Sent", Attributes: [] },
+          { Name: "DRAFT", DisplayName: "Drafts", Attributes: [] },
+          {
+            Name: "Label_123456789",
+            DisplayName: "Customer follow-ups",
+            Attributes: [],
+          },
+        ] as T;
       if (params.get("config_id") === "preview-cloudflare-mailbox")
         return [{ Name: "INBOX", Total: 6 }] as T;
       return [
@@ -471,6 +556,11 @@ const createTransport = (scenario: InboxScenario): Transport => {
                               );
                               const before =
                                 Number(params.get("before_uid")) ||
+                                Number(
+                                  params
+                                    .get("page_token")
+                                    ?.replace("page-", ""),
+                                ) ||
                                 Number.MAX_SAFE_INTEGER;
                               const available = [...previewIncoming, ...mail]
                                 .filter((item) => item.uid < before)
@@ -478,29 +568,47 @@ const createTransport = (scenario: InboxScenario): Transport => {
                               const cloudflare =
                                 params.get("config_id") ===
                                 "preview-cloudflare-mailbox";
+                              const google =
+                                params.get("config_id") ===
+                                `preview-mailbox-${scenario}`;
                               const emails = available
                                 .slice(0, 20)
                                 .map((item) =>
-                                  cloudflare
+                                  google
                                     ? {
                                         ...item,
+                                        id: `${params.get("config_id")}:gmail:gmail-${item.uid}`,
+                                        providerMessageId: `gmail-${item.uid}`,
+                                        uid: undefined,
+                                        uidValidity: undefined,
                                         body: item.body
                                           .replace(/<[^>]*>/g, " ")
                                           .replace(/\s+/g, " ")
                                           .trim()
                                           .slice(0, 160),
-                                        attachments: item.attachments.map(
-                                          (attachment) => ({
-                                            Filename: attachment.Filename,
-                                            MIMEType:
-                                              "application/octet-stream",
-                                            size: Math.floor(
-                                              (attachment.Data.length * 3) / 4,
-                                            ),
-                                          }),
-                                        ),
+                                        attachments: [],
                                       }
-                                    : item,
+                                    : cloudflare
+                                      ? {
+                                          ...item,
+                                          body: item.body
+                                            .replace(/<[^>]*>/g, " ")
+                                            .replace(/\s+/g, " ")
+                                            .trim()
+                                            .slice(0, 160),
+                                          attachments: item.attachments.map(
+                                            (attachment) => ({
+                                              Filename: attachment.Filename,
+                                              MIMEType:
+                                                "application/octet-stream",
+                                              size: Math.floor(
+                                                (attachment.Data.length * 3) /
+                                                  4,
+                                              ),
+                                            }),
+                                          ),
+                                        }
+                                      : item,
                                 );
                               return {
                                 emails,
@@ -509,8 +617,18 @@ const createTransport = (scenario: InboxScenario): Transport => {
                                 offset: 0,
                                 limit: 20,
                                 uidValidity: 1,
+                                ...(google
+                                  ? {
+                                      history_id: "preview-history-1",
+                                      total_is_estimate: true,
+                                      next_page_token:
+                                        available.length > 20
+                                          ? `page-${emails.at(-1)?.uid}`
+                                          : undefined,
+                                    }
+                                  : {}),
                                 next_before_uid:
-                                  available.length > 20
+                                  !google && available.length > 20
                                     ? emails.at(-1)?.uid
                                     : undefined,
                               };
@@ -523,9 +641,11 @@ export function WorkspacePreview() {
   const queryClient = useQueryClient();
   const [page, setPage] = useState("/dashboard");
   const [inboxScenario, setInboxScenario] = useState<InboxScenario>("loaded");
+  const [googleScenario, setGoogleScenario] =
+    useState<GoogleScenario>("connected");
   const transport = useMemo(
-    () => createTransport(inboxScenario),
-    [inboxScenario],
+    () => createTransport(inboxScenario, googleScenario),
+    [inboxScenario, googleScenario],
   );
   return (
     <PreviewTransport.Provider key={inboxScenario} value={transport}>
@@ -580,6 +700,27 @@ export function WorkspacePreview() {
               <span className="sm:hidden">Sample mail</span>
             </button>
           </>
+        )}
+        {page === "/settings/imap" && (
+          <label className="flex items-center gap-1.5">
+            <span className="hidden sm:inline">Google state</span>
+            <select
+              aria-label="Google connection state"
+              className="h-5 rounded border border-border bg-card px-1"
+              value={googleScenario}
+              onChange={(event) => {
+                queryClient.removeQueries({ queryKey: ["marketing"] });
+                setGoogleScenario(event.target.value as GoogleScenario);
+              }}
+            >
+              <option value="connected">Connected</option>
+              <option value="fresh">Not connected</option>
+              <option value="pending">Pending redirect</option>
+              <option value="unconfigured">Not configured</option>
+              <option value="restricted">Restricted</option>
+              <option value="error">Error</option>
+            </select>
+          </label>
         )}
       </div>
       <div

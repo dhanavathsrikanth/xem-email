@@ -50,6 +50,11 @@ const selector = {
   uid: 42,
   uidValidity: 99,
 };
+const gmailSelector = {
+  configId: selector.configId,
+  folder: "INBOX",
+  providerMessageId: "18fabcDEF_123",
+};
 
 function request(body: unknown, signal?: AbortSignal) {
   return new Request("https://app.example/api/assistant/mail-summary", {
@@ -122,6 +127,42 @@ describe("mail summary", () => {
       }),
     );
     expect(release).toHaveBeenCalled();
+  });
+
+  it("fetches Gmail messages by native provider identity and verifies it", async () => {
+    (global.fetch as jest.Mock).mockResolvedValueOnce(
+      Response.json({
+        providerMessageId: gmailSelector.providerMessageId,
+        uid: 0,
+        uidValidity: 0,
+        body: "<p>Native Gmail body.</p>",
+        from: "sender@example.com",
+        to: "reader@example.com",
+      }),
+    );
+    expect((await POST(request(gmailSelector))).status).toBe(200);
+    expect(fetch).toHaveBeenCalledWith(
+      "https://backend.example/api/v1/imap/message?config_id=5c26efc4-67a8-43e1-a8d7-e1673b6fd2c8&folder=INBOX&message_id=18fabcDEF_123",
+      expect.objectContaining({
+        headers: { Authorization: "Bearer user-token" },
+      }),
+    );
+    (global.fetch as jest.Mock).mockResolvedValueOnce(
+      Response.json({ providerMessageId: "different", body: "Wrong message" }),
+    );
+    expect((await POST(request(gmailSelector))).status).toBe(503);
+  });
+
+  it("rejects mixed or malformed native and numeric identities", async () => {
+    expect(
+      (await POST(request({ ...selector, providerMessageId: "native" })))
+        .status,
+    ).toBe(400);
+    expect(
+      (await POST(request({ ...gmailSelector, providerMessageId: "bad/id" })))
+        .status,
+    ).toBe(400);
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("rejects client-supplied body content before fetching", async () => {

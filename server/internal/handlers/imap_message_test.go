@@ -166,6 +166,21 @@ func TestGetMessageUsesReadOnlyPeekAndChecksUIDValidity(t *testing.T) {
 	}
 }
 
+func TestGetMessagePreservesIdentityWhenMIMEIsUnsupported(t *testing.T) {
+	raw := []byte("From: sender@example.com\r\nTo: reader@example.com\r\nSubject: Limited\r\nMessage-ID: <limited@example.com>\r\nContent-Type: multipart/mixed; boundary\r\n\r\nprivate undecoded MIME")
+	fake := &fakeMessageIMAP{status: &imap.MailboxStatus{UidValidity: 7}, raw: raw, size: uint32(len(raw)), uid: 42}
+	h := &IMAPHandler{messageConnect: func(echo.Context) (messageIMAPClient, *models.IMAPConfig, error) {
+		return fake, &models.IMAPConfig{Base: models.Base{ID: "config"}}, nil
+	}}
+	recorder := httptest.NewRecorder()
+	context := echo.New().NewContext(httptest.NewRequest("GET", "/api/v1/imap/message?folder=INBOX&uid=42&uid_validity=7", nil), recorder)
+	require.NoError(t, h.GetMessage(context))
+	require.Equal(t, 200, recorder.Code)
+	require.Contains(t, recorder.Body.String(), "limited@example.com")
+	require.Contains(t, recorder.Body.String(), utils.UnavailableMailBody)
+	require.NotContains(t, recorder.Body.String(), "private undecoded MIME")
+}
+
 func TestMessageConnectionCannotLoadAnotherWorkspaceConfig(t *testing.T) {
 	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)

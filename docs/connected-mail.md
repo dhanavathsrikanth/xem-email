@@ -26,12 +26,16 @@ Credentials alone do not enable public mailbox connections. The default `testing
 
 1. Sign in as a workspace administrator and open **Settings → IMAP**.
 2. Select **Connect Google mailbox** and authorize the intended Gmail or Workspace mailbox.
-3. Return to Xem. The connection creates a linked `imap.gmail.com:993` mailbox and `smtp.gmail.com:465` sender.
+3. Return to Xem. The connection creates a Gmail API inbox and linked `smtp.gmail.com:465` sender.
 4. Select the mailbox in **Inbox** and the sender in **Compose**. Replies from a Google mailbox select its linked sender and preserve the parent Message-ID in `In-Reply-To` and `References`.
 
 The connection grants **workspace-wide** mailbox access under existing IMAP permissions. This release does not provide private personal mailboxes, delegated send-as, per-mailbox roles, or shared inbox assignments. The consent screen in Xem states this before authorization. Connect a business mailbox intended for your workspace.
 
-Google's IMAP/SMTP XOAUTH2 flow requires the restricted `https://mail.google.com/` scope. Public hosted distribution needs the applicable Google OAuth verification and security assessment; Workspace organizations may need to allow the application. Self-hosters configure their own OAuth application. Test-mode grants may be short-lived. Google receiving/sending limits still apply. This is not a way to bypass Workspace licensing or bulk-sending restrictions.
+The current OAuth grant retains the full `https://mail.google.com/` scope because SMTP sending still uses XOAUTH2. Inbox reads and read/starred changes use Gmail's HTTPS API and do not open an IMAP connection. Public hosted distribution needs the applicable Google OAuth verification and security assessment; Workspace organizations may need to allow the application. Self-hosters configure their own OAuth application. Test-mode grants may be short-lived. Google receiving/sending limits still apply. This is not a way to bypass Workspace licensing or bulk-sending restrictions.
+
+Gmail lists fetch metadata and snippets with at most 20 messages per page using Gmail's opaque `page_token`; full message bodies load only when a message is opened. Attachments remain metadata until explicitly downloaded, and each attachment download is limited to 10 MiB. Xem exposes a stable MIME part selector for each attachment and resolves Google's current attachment ID only at download time because Gmail can rotate that provider ID between reads. Gmail totals are estimates. Label IDs remain the request identifiers even when Xem shows friendly display names.
+
+Foreground refresh checks use Gmail history IDs and reset the current listing if Google reports that a saved history baseline is stale. They skip hidden or offline views and do not overlap. Pub/Sub watch delivery and durable background mailbox synchronization are future infrastructure and are not implemented here. Switching mailbox or search context starts a new pagination and history baseline.
 
 OAuth uses PKCE, a ten-minute state bound to the current user and team, and a single-use completion endpoint. The browser receives no access or refresh tokens. Credentials use AES-GCM with a per-secret key wrapped by the installation RSA key and bound to the workspace/connection. Refreshes lock the connection row and persist rotated tokens.
 
@@ -89,9 +93,9 @@ The raw recipient groups are stored as `providerResult` on the email record. Thi
 - Verified TLS 1.2 or newer. Port 143 upgrades with STARTTLS; other ports use implicit TLS. No insecure certificate bypass.
 - Public destinations by default, checked after DNS resolution. `ALLOW_PRIVATE_IMAP=true` is an explicit operator opt-in for internal servers, while TLS validation still applies.
 - `GET /imap/folders?config_id=...` returns the existing array of folder objects, now consumed correctly by the client. Nonselectable folders are omitted from the picker.
-- `GET /imap/emails?config_id=...&folder=INBOX&offset=0&limit=20&q=receipt` uses IMAP TEXT search. Limits are 1–100; legacy zero-based `page` remains supported. Search totals reflect the filtered results. Empty pages return an empty list with HTTP 200.
+- For generic IMAP, `GET /imap/emails?config_id=...&folder=INBOX&offset=0&limit=20&q=receipt` uses IMAP TEXT search. Limits are 1–100; legacy zero-based `page` remains supported. Search totals reflect the filtered results. Empty pages return an empty list with HTTP 200. Gmail connections instead use the native metadata and page-token flow described above.
 - Stable infinite scrolling can omit `offset` and pass the prior response's `next_before_uid` back as `before_uid`. Cursor pages contain only UIDs below that value; `total_emails` remains the total count before cursor filtering, and `next_before_uid` is omitted when exhausted. A cursor cannot be combined with a nonzero `offset` or `page`.
-- `GET /imap/head?config_id=...&folder=INBOX&q=receipt` supports lightweight foreground polling. It performs a read-only UID search without fetching message bodies and returns `total_emails`, `uidValidity`, and the highest matching `latest_uid` (zero for an empty result).
+- For generic IMAP, `GET /imap/head?config_id=...&folder=INBOX&q=receipt` supports lightweight foreground polling. It performs a read-only UID search without fetching message bodies and returns `total_emails`, `uidValidity`, and the highest matching `latest_uid` (zero for an empty result). Gmail uses bounded history checks instead.
 - Message IDs combine config, folder, UIDVALIDITY, and UID; `messageId` and the legacy `message_id` both expose the RFC Message-ID. Listing uses `BODY.PEEK` and does not mark messages read.
 - `PATCH /imap/flags?config_id=...` accepts `{folder, uid, uidValidity, flag, enabled}` for `\\Seen` or `\\Flagged`. A changed UIDVALIDITY returns 409. No expunge or permanent-delete operation is added.
 - Message sizes are fetched before bodies, with a cumulative 25 MiB raw-message budget per response. A smaller page is required for large messages. There is no background full-mailbox mirror or attachment indexing yet.
@@ -104,7 +108,7 @@ Legacy SMTP/IMAP passwords are write-only, including when configurations are loa
 
 Inbox summaries are disabled by default. To offer them, configure the client server with `XEM_MAIL_SUMMARY_ENABLED=true` and the existing assistant settings: `XEM_ASSISTANT_ENABLED`, `AI_PROXY_BASE_URL`, `AI_PROXY_MODEL`, and `AI_PROXY_API_KEY`. Production also requires `ASSISTANT_REDIS_URL`; Xem uses Redis for shared rate limits, the daily team allowance, and a lock that prevents overlapping assistant work across replicas. Keep all of these variables server-only.
 
-A signed-in user must select **Summarize** for a specific inbox message. The browser sends only the mailbox configuration ID, folder, UID, and UIDVALIDITY. The Xem server retrieves that message through the authenticated, workspace-scoped read endpoint and sends bounded visible body text plus the From, To, Cc, Date, and Subject headers to the configured AI provider. Attachment bytes, remote images, and linked resources are not sent or fetched. Long visible bodies are shortened and the result says when this happened.
+A signed-in user must select **Summarize** for a specific inbox message. The browser sends the mailbox configuration ID and folder plus either the Gmail provider message ID or the generic IMAP UID and UIDVALIDITY. The Xem server retrieves that exact message through the authenticated, workspace-scoped read endpoint and verifies the returned identity before sending bounded visible body text plus the From, To, Cc, Date, and Subject headers to the configured AI provider. Attachment bytes, remote images, and linked resources are not sent or fetched. Long visible bodies are shortened and the result says when this happened.
 
 The summary response is returned to the requesting browser and is not written to Xem's assistant conversation store. Normal infrastructure and provider processing may still apply, so operators must review their AI provider's data handling, recipient-data restrictions, regional requirements, retention terms, and acceptable-use policies before enabling the feature. Xem does not determine whether mailbox participants consented to third-party AI processing.
 
@@ -124,7 +128,11 @@ If the Transactional category was intentionally deleted, startup reports a seedi
 
 Automated checks cover state expiry/replay/tenant binding, authorization, encryption and credential redaction, pagination/search, recipient outcomes, size/header validation, and ambiguous request handling using local mocks. Browser preview uses sample data and blocks real sending.
 
-Before making a production availability claim, use an authorized test Workspace/Gmail account to check consent, refresh after token expiry, inbox folders, reply threading, and disconnect. Use an enabled Cloudflare domain and recipients you control to verify transactional delivery, queued recipients, and provider logs. If summaries are enabled, separately verify the configured AI provider with an authorized test message and review its output against the source. The browser preview uses mock summary data; local tests do not contact Google, Cloudflare, or the AI provider. These live provider checks require actual deployment configuration and are not implied by local tests.
+An authorized own-account Gmail acceptance run verified consent, refresh-token use, SMTP send, Gmail API receive, reply headers, two unique 20-message cursor pages, exact attachment bytes through both the API and UI, all four read/unread and star/unstar actions, and stale-history reset. A real Gmail flag update was detected by history polling: the generic mailbox-change banner appeared after 27 seconds, and refreshing showed the changed message. This verifies change detection for a flag update; it is not evidence of a new-arrival-specific banner. In that run, the first 20-message metadata page took about 2.2 seconds and transferred about 16 KiB; an opened message detail took about 0.3 seconds. These measurements describe one test account and network, not a latency guarantee.
+
+Disconnect returned HTTP 204, cleared the stored secret, made the linked inbox and sender inactive, and caused subsequent reads to return HTTP 409 and sending attempts to return HTTP 400. Reconnecting through the real Google **Allow** screen produced one HTTP 201 completion, a success screen with a clean callback URL, and a 20-message inbox. Real Gmail API UI checks covered mobile and desktop layouts in light and dark themes with no horizontal overflow. Screenshots and acceptance records must not include private mailbox content or provider identifiers.
+
+Before making a production availability claim, complete applicable Google public verification and security assessment. Use an enabled Cloudflare domain and recipients you control to verify transactional delivery, queued recipients, and provider logs. If summaries are enabled, separately verify the configured AI provider with an authorized test message and review its output against the source. The browser preview uses mock summary data; this acceptance run did not contact Cloudflare or an AI provider. No production deployment or live Cloudflare delivery is implied by the Gmail acceptance run.
 
 ### Isolated local provider checks
 
@@ -137,6 +145,10 @@ Database connection values are quoted, including empty passwords, and the backen
 ## Research sources
 
 - [Google Gmail scopes](https://developers.google.com/workspace/gmail/api/auth/scopes)
+- [Gmail API message listing](https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/list)
+- [Gmail API message retrieval](https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/get)
+- [Gmail API history listing](https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.history/list)
+- [Gmail API attachment retrieval](https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages.attachments/get)
 - [Google IMAP/SMTP OAuth](https://developers.google.com/workspace/gmail/imap/xoauth2-protocol)
 - [Cloudflare REST sending](https://developers.cloudflare.com/email-service/api/send-emails/rest-api/)
 - [Cloudflare FAQ](https://developers.cloudflare.com/email-service/reference/faq/)

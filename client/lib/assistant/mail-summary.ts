@@ -15,23 +15,39 @@ import {
 const MAX_BACKEND_BYTES = 11 * 1024 * 1024;
 const MAX_MODEL_TEXT = 32_000;
 
-export const mailSummaryInput = z
-  .object({
-    configId: z.string().uuid(),
-    folder: z
-      .string()
-      .min(1)
-      .max(1_024)
-      .regex(/^[^\u0000-\u001f\u007f]+$/),
-    uid: z.number().int().min(1).max(0xffffffff),
-    uidValidity: z.number().int().min(1).max(0xffffffff),
-  })
-  .strict();
+const selectorBase = {
+  configId: z.string().uuid(),
+  folder: z
+    .string()
+    .min(1)
+    .max(1_024)
+    .regex(/^[^\u0000-\u001f\u007f]+$/),
+};
+export const mailSummaryInput = z.union([
+  z
+    .object({
+      ...selectorBase,
+      uid: z.number().int().min(1).max(0xffffffff),
+      uidValidity: z.number().int().min(1).max(0xffffffff),
+    })
+    .strict(),
+  z
+    .object({
+      ...selectorBase,
+      providerMessageId: z
+        .string()
+        .min(1)
+        .max(256)
+        .regex(/^[A-Za-z0-9_-]+$/),
+    })
+    .strict(),
+]);
 
 const canonicalMessage = z
   .object({
-    uid: z.number().int().positive(),
-    uidValidity: z.number().int().positive(),
+    uid: z.number().int().min(0).optional(),
+    uidValidity: z.number().int().min(0).optional(),
+    providerMessageId: z.string().min(1).max(256).optional(),
     body: z.string(),
     from: z.string().max(4_000).default(""),
     to: z.string().max(4_000).default(""),
@@ -128,9 +144,14 @@ async function fetchCanonicalMessage(
   const query = new URLSearchParams({
     config_id: input.configId,
     folder: input.folder,
-    uid: String(input.uid),
-    uid_validity: String(input.uidValidity),
   });
+  if ("providerMessageId" in input)
+    query.set("message_id", input.providerMessageId);
+  else {
+    const legacy = input as { uid: number; uidValidity: number };
+    query.set("uid", String(legacy.uid));
+    query.set("uid_validity", String(legacy.uidValidity));
+  }
   const response = await fetch(`${backendEndpoint()}/imap/message?${query}`, {
     headers: { Authorization: `Bearer ${scope.accessToken}` },
     cache: "no-store",
@@ -156,11 +177,14 @@ async function fetchCanonicalMessage(
     throw new AssistantError(503, "The message could not be loaded.");
   }
   const parsed = canonicalMessage.safeParse(await boundedJSON(response));
-  if (
-    !parsed.success ||
-    parsed.data.uid !== input.uid ||
-    parsed.data.uidValidity !== input.uidValidity
-  )
+  const identityMatches =
+    parsed.success &&
+    ("providerMessageId" in input
+      ? parsed.data.providerMessageId === input.providerMessageId
+      : parsed.data.uid === (input as { uid: number }).uid &&
+        parsed.data.uidValidity ===
+          (input as { uidValidity: number }).uidValidity);
+  if (!identityMatches)
     throw new AssistantError(503, "The message could not be verified.");
   return parsed.data;
 }

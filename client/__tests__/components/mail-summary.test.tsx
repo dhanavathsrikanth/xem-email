@@ -72,6 +72,27 @@ test("summary is explicit and sends only the stable message selector", async () 
   expect(container.textContent).toContain("Reply Thursday");
 });
 
+test("Gmail summary sends only the native provider message selector", async () => {
+  const native = {
+    configId: props.configId,
+    folder: "INBOX",
+    providerMessageId: "18fabcDEF_123",
+  };
+  mockRequest.mockResolvedValue({
+    summary: "Native.",
+    keyPoints: [],
+    actionItems: [],
+    truncated: false,
+  });
+  await act(async () => root.render(<MailSummary {...native} />));
+  await act(async () => button("Summarize").click());
+  expect(mockRequest).toHaveBeenCalledWith(
+    "assistant/mail-summary",
+    "POST",
+    native,
+  );
+});
+
 test("disabled workspaces explain why summary is unavailable", async () => {
   enabled = false;
   await act(async () => root.render(<MailSummary {...props} />));

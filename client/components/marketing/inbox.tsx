@@ -1,6 +1,6 @@
 "use client";
 import { workspaceClassName } from "@/lib/workspace-styles";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import {
   Mail,
@@ -34,14 +34,16 @@ import {
   replySubject,
 } from "@/lib/connected-mail";
 import { toast } from "sonner";
-function sender(value: string) {
+export function senderName(value: string) {
+  const source = value?.trim();
+  if (!source) return "Unknown sender";
+  const addressOnly = source.match(/^<\s*([^<>]+?)\s*>$/);
+  if (addressOnly) return addressOnly[1];
+  const address = source.match(/<[^<>]*>\s*$/);
+  if (!address) return source.replace(/^"|"$/g, "").trim() || source;
   return (
-    value
-      ?.replace(/<[^>]*>/g, "")
-      .replaceAll('"', "")
-      .trim() ||
-    value ||
-    "Unknown sender"
+    source.slice(0, address.index).trim().replace(/^"|"$/g, "").trim() ||
+    address[0].slice(1, -1).trim()
   );
 }
 function text(body: string) {
@@ -68,6 +70,13 @@ function attachmentSize(data: string) {
     ? `${bytes} B`
     : `${(bytes / 1024).toFixed(bytes < 10240 ? 1 : 0)} KB`;
 }
+function byteSize(bytes: number) {
+  return bytes < 1024
+    ? `${bytes} B`
+    : bytes < 1024 * 1024
+      ? `${(bytes / 1024).toFixed(bytes < 10240 ? 1 : 0)} KB`
+      : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
 type MailMessage = IMAPEmail & { status?: string; error?: string };
 type Mailbox = {
   id: string;
@@ -87,6 +96,16 @@ export const sortMailMessages = (messages: MailMessage[]) =>
       Number(b.flags?.includes("\\Flagged")) -
       Number(a.flags?.includes("\\Flagged")),
   );
+export function dedupeMailMessages(messages: MailMessage[]) {
+  const seen = new Set<string>();
+  return messages.filter((message, index) => {
+    const key =
+      messageKey(message) || `${message.date}:${message.subject}:${index}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
 export function InboxPage() {
   return <MailboxPage mode="inbox" />;
 }
@@ -106,7 +125,12 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
     mailboxes.data?.find((m) => m.id === chosenMailbox) ?? mailboxes.data?.[0];
   const configId = mailbox?.id ?? "";
   const folders = useMarketingQuery<
-    { Name: string; Total?: number; Attributes?: string[] }[]
+    {
+      Name: string;
+      DisplayName?: string;
+      Total?: number;
+      Attributes?: string[];
+    }[]
   >(
     `imap/folders?${new URLSearchParams({ config_id: configId })}`,
     !outbox && !!configId,
@@ -120,16 +144,24 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
   >("idle");
   const [compose, setCompose] = useState<ComposeValue | null>(null);
   const [flagBusy, setFlagBusy] = useState(false);
+  const [attachmentBusy, setAttachmentBusy] = useState("");
   const [newMailAvailable, setNewMailAvailable] = useState(false);
   const [epochVersion, setEpochVersion] = useState(0);
   const epochRef = useRef<number | undefined>(undefined);
+  const historyRef = useRef<string | undefined>(undefined);
+  const historyBaselineIdentityRef = useRef("");
   const pollInFlight = useRef(false);
+  const requestRef = useRef(request);
+  const selectedRef = useRef(selected);
+  const attachmentRequestRef = useRef(0);
   const listScrollRef = useRef<HTMLDivElement>(null);
   const loadSentinelRef = useRef<HTMLDivElement>(null);
   const generation = `${scope}:${configId}:${folder}:${query}`;
   const generationRef = useRef(generation);
   const detailRequestRef = useRef(0);
   generationRef.current = generation;
+  requestRef.current = request;
+  selectedRef.current = selected;
   useEffect(() => {
     setCompose(null);
   }, [scope]);
@@ -137,35 +169,43 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
     setSelected(null);
     setDetailState("idle");
     detailRequestRef.current += 1;
+    attachmentRequestRef.current += 1;
     setImages(false);
     setFlagBusy(false);
+    setAttachmentBusy("");
     setNewMailAvailable(false);
     epochRef.current = undefined;
+    historyRef.current = undefined;
+    historyBaselineIdentityRef.current = "";
   }, [scope, configId, folder, query]);
   const [images, setImages] = useState(false);
   const emails = useInfiniteQuery({
     queryKey: ["marketing", scope, mode, configId, folder, query, epochVersion],
     enabled: ready && (outbox || !!configId),
-    initialPageParam: outbox ? 1 : (undefined as number | undefined),
+    initialPageParam: outbox ? 1 : (undefined as number | string | undefined),
     queryFn: async ({ pageParam }): Promise<IMAPEmailResponse> => {
       if (!outbox) {
         const queryGeneration = generation;
+        const google = mailbox?.provider === "GOOGLE_OAUTH";
         const params = new URLSearchParams({
           folder,
           limit: "20",
           q: query,
           config_id: configId,
         });
-        if (pageParam) params.set("before_uid", String(pageParam));
+        if (pageParam)
+          params.set(google ? "page_token" : "before_uid", String(pageParam));
         const response = await request<IMAPEmailResponse>(
           `imap/emails?${params}`,
         );
         if (
+          !google &&
           generationRef.current === queryGeneration &&
           epochRef.current === undefined
         )
           epochRef.current = response.uidValidity;
         else if (
+          !google &&
           generationRef.current === queryGeneration &&
           pageParam &&
           response.uidValidity !== undefined &&
@@ -226,16 +266,43 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
         limit: 20,
       };
     },
-    getNextPageParam: (last, pages) =>
-      outbox
-        ? last.emails.length > 0 && last.offset + last.limit < last.total_emails
+    getNextPageParam: (last, pages) => {
+      if (outbox)
+        return last.emails.length > 0 &&
+          last.offset + last.limit < last.total_emails
           ? pages.length + 1
-          : undefined
-        : last.next_before_uid,
+          : undefined;
+      const cursor =
+        mailbox?.provider === "GOOGLE_OAUTH"
+          ? last.next_page_token
+          : last.next_before_uid;
+      if (
+        cursor === undefined ||
+        pages
+          .slice(0, -1)
+          .some((page) =>
+            mailbox?.provider === "GOOGLE_OAUTH"
+              ? page.next_page_token === cursor
+              : page.next_before_uid === cursor,
+          )
+      )
+        return undefined;
+      return cursor;
+    },
     retry: 1,
   });
-  const allRows: MailMessage[] =
-    emails.data?.pages.flatMap((p) => p.emails) || [];
+  const allRows: MailMessage[] = useMemo(
+    () => dedupeMailMessages(emails.data?.pages.flatMap((p) => p.emails) || []),
+    [emails.data],
+  );
+  const firstPageHistory = emails.data?.pages[0]?.history_id;
+  useEffect(() => {
+    if (mailbox?.provider !== "GOOGLE_OAUTH" || !firstPageHistory) return;
+    const identity = `${generation}:${epochVersion}:${firstPageHistory}`;
+    if (historyBaselineIdentityRef.current === identity) return;
+    historyBaselineIdentityRef.current = identity;
+    historyRef.current = firstPageHistory;
+  }, [epochVersion, firstPageHistory, generation, mailbox?.provider]);
   const rows =
     outbox && query
       ? allRows.filter((m) =>
@@ -248,6 +315,12 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
   useEffect(() => {
     if (outbox || !ready || !configId || query || !emails.isSuccess) return;
     let stopped = false;
+    let timer: number | undefined;
+    let failures = 0;
+    const schedule = (delay: number) => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => void poll(), delay);
+    };
     const poll = async () => {
       if (
         document.visibilityState !== "visible" ||
@@ -255,16 +328,35 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
         stopped ||
         pollInFlight.current
       )
-        return;
+        return schedule(30_000);
       pollInFlight.current = true;
       try {
-        const head = await request<{
+        const google = mailbox?.provider === "GOOGLE_OAUTH";
+        if (google && !historyRef.current) return;
+        const params = new URLSearchParams({
+          folder,
+          q: query,
+          config_id: configId,
+        });
+        if (google) params.set("history_id", historyRef.current!);
+        const head = await requestRef.current<{
           latest_uid: number;
           uidValidity?: number;
-        }>(
-          `imap/head?${new URLSearchParams({ folder, q: query, config_id: configId })}`,
-        );
+          history_id?: string;
+          changed?: boolean;
+          reset_required?: boolean;
+        }>(`imap/head?${params}`);
         if (stopped) return;
+        failures = 0;
+        if (google) {
+          if (head.history_id) historyRef.current = head.history_id;
+          if (head.reset_required) {
+            setSelected(null);
+            setNewMailAvailable(false);
+            setEpochVersion((value) => value + 1);
+          } else if (head.changed) setNewMailAvailable(true);
+          return;
+        }
         if (
           epochRef.current !== undefined &&
           head.uidValidity !== undefined &&
@@ -282,18 +374,21 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
         );
         setNewMailAvailable(head.latest_uid > highest);
       } catch {
+        failures += 1;
         /* Poll failures stay quiet; the normal inbox query owns visible errors. */
       } finally {
         pollInFlight.current = false;
+        if (!stopped)
+          schedule(Math.min(300_000, 30_000 * 2 ** Math.min(failures, 4)));
       }
     };
-    const timer = window.setInterval(() => void poll(), 30_000);
+    void poll();
     const resume = () => void poll();
     document.addEventListener("visibilitychange", resume);
     window.addEventListener("online", resume);
     return () => {
       stopped = true;
-      window.clearInterval(timer);
+      window.clearTimeout(timer);
       document.removeEventListener("visibilitychange", resume);
       window.removeEventListener("online", resume);
     };
@@ -303,9 +398,9 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
     configId,
     folder,
     query,
-    request,
     allRows,
     emails.isSuccess,
+    mailbox?.provider,
   ]);
 
   useEffect(() => {
@@ -335,7 +430,12 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
     emails.fetchNextPage,
   ]);
   const total = emails.data?.pages[0]?.total_emails || 0;
-  const displayedFolders = outbox
+  const displayedFolders: {
+    Name: string;
+    DisplayName?: string;
+    Total?: number;
+    Attributes?: string[];
+  }[] = outbox
     ? [
         "SENT",
         "ACCEPTED",
@@ -353,10 +453,15 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
         (item) => !item.Attributes?.includes("\\Noselect"),
       ) || [{ Name: "INBOX", Total: total }];
   const displayedRows = sortMailMessages(rows);
+  const requiresDetail =
+    mailbox?.provider === "CLOUDFLARE" || mailbox?.provider === "GOOGLE_OAUTH";
   const index = displayedRows.findIndex(
     (e) => messageKey(e) === (selected ? messageKey(selected) : undefined),
   );
   const current = selected;
+  const folderDisplayName = displayedFolders.find(
+    (item) => item.Name === folder,
+  )?.DisplayName;
   useEffect(() => {
     if (
       selected &&
@@ -368,11 +473,12 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
     }
   }, [emails.data, emails.isFetching, rows, selected]);
   const loadMessageDetail = async (m: MailMessage) => {
+    const google = mailbox?.provider === "GOOGLE_OAUTH";
+    const cloudflare = mailbox?.provider === "CLOUDFLARE";
     if (
       outbox ||
-      mailbox?.provider !== "CLOUDFLARE" ||
-      m.uid == null ||
-      m.uidValidity == null
+      (!google && !cloudflare) ||
+      (google ? !m.providerMessageId : m.uid == null || m.uidValidity == null)
     ) {
       setDetailState("ready");
       return;
@@ -382,20 +488,23 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
     const key = messageKey(m);
     setDetailState("loading");
     try {
-      const detail = await request<MailMessage>(
-        `imap/message?${new URLSearchParams({
-          config_id: configId,
-          folder,
-          uid: String(m.uid),
-          uid_validity: String(m.uidValidity),
-        })}`,
-      );
+      const params = new URLSearchParams({ config_id: configId, folder });
+      if (google) params.set("message_id", m.providerMessageId!);
+      else {
+        params.set("uid", String(m.uid));
+        params.set("uid_validity", String(m.uidValidity));
+      }
+      const detail = await request<MailMessage>(`imap/message?${params}`);
       if (
         detailRequestRef.current !== requestID ||
         generationRef.current !== requestGeneration
       )
         return;
-      if (detail.uid !== m.uid || detail.uidValidity !== m.uidValidity) {
+      if (
+        (google && detail.providerMessageId !== m.providerMessageId) ||
+        (!google &&
+          (detail.uid !== m.uid || detail.uidValidity !== m.uidValidity))
+      ) {
         setDetailState("error");
         return;
       }
@@ -413,12 +522,22 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
   };
   const choose = (m: MailMessage) => {
     detailRequestRef.current += 1;
+    attachmentRequestRef.current += 1;
+    setAttachmentBusy("");
     setSelected(m);
     setImages(false);
     void loadMessageDetail(m);
   };
   async function changeFlag(flag: string) {
-    if (!current?.uid || !current.uidValidity || flagBusy) return;
+    const google = mailbox?.provider === "GOOGLE_OAUTH";
+    if (
+      !current ||
+      flagBusy ||
+      (google
+        ? !current.providerMessageId
+        : !current.uid || !current.uidValidity)
+    )
+      return;
     const message = current;
     const requestGeneration = generation;
     const enabled = !message.flags?.includes(flag);
@@ -427,13 +546,20 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
       await request(
         `imap/flags?${new URLSearchParams({ config_id: configId })}`,
         "PATCH",
-        {
-          folder,
-          uid: message.uid,
-          uidValidity: message.uidValidity,
-          flag,
-          enabled,
-        },
+        google
+          ? {
+              folder,
+              providerMessageId: message.providerMessageId,
+              flag,
+              enabled,
+            }
+          : {
+              folder,
+              uid: message.uid,
+              uidValidity: message.uidValidity,
+              flag,
+              enabled,
+            },
       );
       if (generationRef.current !== requestGeneration) return;
       const flags = enabled
@@ -450,6 +576,47 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
         toast.error((error as Error).message);
     } finally {
       if (generationRef.current === requestGeneration) setFlagBusy(false);
+    }
+  }
+  async function downloadAttachment(
+    message: MailMessage,
+    attachment: MailMessage["attachments"][number],
+  ) {
+    if (!message.providerMessageId || !attachment.AttachmentID) return;
+    const requestGeneration = generation;
+    const requestID = ++attachmentRequestRef.current;
+    const attachmentKey = `${message.providerMessageId}:${attachment.AttachmentID}`;
+    setAttachmentBusy(attachmentKey);
+    try {
+      const result = await request<{ Data: string }>(
+        `imap/attachment?${new URLSearchParams({
+          config_id: configId,
+          folder,
+          message_id: message.providerMessageId,
+          attachment_id: attachment.AttachmentID,
+        })}`,
+      );
+      if (
+        attachmentRequestRef.current !== requestID ||
+        generationRef.current !== requestGeneration ||
+        !selectedRef.current ||
+        messageKey(selectedRef.current) !== messageKey(message) ||
+        typeof result.Data !== "string"
+      )
+        return;
+      const anchor = document.createElement("a");
+      anchor.download = attachment.Filename;
+      anchor.href = `data:${attachment.MIMEType || "application/octet-stream"};base64,${result.Data}`;
+      anchor.click();
+    } catch (error) {
+      if (generationRef.current === requestGeneration)
+        toast.error((error as Error).message);
+    } finally {
+      if (
+        attachmentRequestRef.current === requestID &&
+        generationRef.current === requestGeneration
+      )
+        setAttachmentBusy("");
     }
   }
   function reply(message: MailMessage): ComposeValue {
@@ -549,7 +716,8 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
                   ? "Inbox"
                   : f.Name === "DELIVERY_UNKNOWN"
                     ? "Needs review"
-                    : f.Name.charAt(0) + f.Name.slice(1).toLowerCase()}
+                    : f.DisplayName ||
+                      f.Name.charAt(0) + f.Name.slice(1).toLowerCase()}
               </span>
               <small>{f.Total || ""}</small>
             </button>
@@ -577,10 +745,15 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
         <div className={workspaceClassName("mail-list-heading")}>
           <div>
             <h1>
-              {outbox ? "Outbox" : folder === "INBOX" ? "Inbox" : folder}
+              {outbox
+                ? "Outbox"
+                : folderDisplayName || (folder === "INBOX" ? "Inbox" : folder)}
               <ChevronDown size={16} />
             </h1>
-            <p>{total.toLocaleString()} messages</p>
+            <p>
+              {emails.data?.pages[0]?.total_is_estimate ? "About " : ""}
+              {total.toLocaleString()} messages
+            </p>
           </div>
           <button
             className={workspaceClassName("icon-button")}
@@ -615,7 +788,7 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
         >
           {displayedFolders.map((item) => (
             <option key={item.Name} value={item.Name}>
-              {item.Name}
+              {item.DisplayName || item.Name}
             </option>
           ))}
         </select>
@@ -653,7 +826,9 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
                 listScrollRef.current?.scrollTo({ top: 0, behavior: "smooth" });
               }}
             >
-              New messages available · Show
+              {mailbox?.provider === "GOOGLE_OAUTH"
+                ? "Mailbox updated · Refresh"
+                : "New messages available · Show"}
             </button>
           )}
           <QueryState
@@ -701,13 +876,13 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
                   ][i % 4],
                 }}
               >
-                {sender(outbox ? m.to : m.from)
+                {senderName(outbox ? m.to : m.from)
                   .slice(0, 1)
                   .toUpperCase()}
               </span>
               <div>
                 <div className={workspaceClassName("mail-item-line")}>
-                  <strong>{sender(outbox ? m.to : m.from)}</strong>
+                  <strong>{senderName(outbox ? m.to : m.from)}</strong>
                   <time>
                     {m.date
                       ? new Date(m.date).toLocaleDateString(undefined, {
@@ -760,21 +935,17 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
               <button
                 className={workspaceClassName("icon-button")}
                 aria-label={outbox ? "Write to recipient" : "Reply"}
-                disabled={
-                  mailbox?.provider === "CLOUDFLARE" && detailState !== "ready"
-                }
+                disabled={requiresDetail && detailState !== "ready"}
                 onClick={() => setCompose(reply(current))}
               >
                 <Reply />
               </button>
-              {!outbox && current.uid && (
+              {!outbox && (current.uid || current.providerMessageId) && (
                 <>
                   <button
                     className={workspaceClassName("icon-button")}
                     disabled={
-                      flagBusy ||
-                      (mailbox?.provider === "CLOUDFLARE" &&
-                        detailState !== "ready")
+                      flagBusy || (requiresDetail && detailState !== "ready")
                     }
                     aria-label={
                       current.flags?.includes("\\Seen")
@@ -793,9 +964,7 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
                   <button
                     className={workspaceClassName("icon-button")}
                     disabled={
-                      flagBusy ||
-                      (mailbox?.provider === "CLOUDFLARE" &&
-                        detailState !== "ready")
+                      flagBusy || (requiresDetail && detailState !== "ready")
                     }
                     aria-label={
                       current.flags?.includes("\\Flagged")
@@ -861,10 +1030,10 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
             <div className={workspaceClassName("mail-message")}>
               <div className={workspaceClassName("mail-sender")}>
                 <span className={workspaceClassName("mail-avatar")}>
-                  {sender(current.from).slice(0, 1)}
+                  {senderName(current.from).slice(0, 1)}
                 </span>
                 <div>
-                  <strong>{sender(current.from)}</strong>
+                  <strong>{senderName(current.from)}</strong>
                   <p>
                     {(outbox ? current.to : current.from).match(
                       /<([^>]+)>/,
@@ -887,41 +1056,52 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
                   </>
                 )}
               </p>
-              {mailbox?.provider === "CLOUDFLARE" &&
-                detailState === "loading" && (
-                  <p role="status" className="text-sm text-muted-foreground">
-                    Loading the complete message…
+              {requiresDetail && detailState === "loading" && (
+                <p role="status" className="text-sm text-muted-foreground">
+                  Loading the complete message…
+                </p>
+              )}
+              {requiresDetail && detailState === "error" && (
+                <div role="alert" className="space-y-2 rounded-lg border p-3">
+                  <p className="text-sm">
+                    Couldn’t load the complete message. Try again before
+                    replying or using its AI summary.
                   </p>
-                )}
-              {mailbox?.provider === "CLOUDFLARE" &&
-                detailState === "error" && (
-                  <div role="alert" className="space-y-2 rounded-lg border p-3">
-                    <p className="text-sm">
-                      Couldn’t load the complete message. Try again before
-                      replying or using its AI summary.
-                    </p>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => void loadMessageDetail(current)}
-                    >
-                      Retry loading message
-                    </Button>
-                  </div>
-                )}
-              {(mailbox?.provider !== "CLOUDFLARE" ||
-                detailState === "ready") && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => void loadMessageDetail(current)}
+                  >
+                    Retry loading message
+                  </Button>
+                </div>
+              )}
+              {(!requiresDetail || detailState === "ready") && (
                 <>
-                  {!outbox &&
+                  {!outbox && current.providerMessageId ? (
+                    <MailSummary
+                      configId={configId}
+                      folder={folder}
+                      providerMessageId={current.providerMessageId}
+                    />
+                  ) : !outbox &&
                     current.uid != null &&
-                    current.uidValidity != null && (
-                      <MailSummary
-                        configId={configId}
-                        folder={folder}
-                        uid={current.uid}
-                        uidValidity={current.uidValidity}
-                      />
-                    )}
+                    current.uidValidity != null ? (
+                    <MailSummary
+                      configId={configId}
+                      folder={folder}
+                      uid={current.uid}
+                      uidValidity={current.uidValidity}
+                    />
+                  ) : null}
+                  {current.warning && (
+                    <p
+                      role="note"
+                      className="rounded-lg border px-3 py-2 text-sm text-muted-foreground"
+                    >
+                      {current.warning}
+                    </p>
+                  )}
                   {hasRemoteImages(current.body) && (
                     <div className={workspaceClassName("remote-images-note")}>
                       {images
@@ -941,21 +1121,17 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
                     referrerPolicy="no-referrer"
                     srcDoc={`<meta name="color-scheme" content="light"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${images ? "https:" : ""} data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"><style>:root{color-scheme:light}html,body{background:#fff}body{font:14px/1.8 Arial;color:#3f3b43;overflow-wrap:anywhere;margin:0;padding:16px}img{max-width:100%}</style>${current.body}`}
                   />
-                  {current.attachments?.some(
-                    (attachment) => typeof attachment.Data === "string",
-                  ) && (
+                  {current.attachments?.length > 0 && (
                     <section
                       className={workspaceClassName("mail-attachment-section")}
                     >
                       <h3>Attachments ({current.attachments.length})</h3>
                       <div className={workspaceClassName("mail-attachments")}>
-                        {current.attachments
-                          .filter(
-                            (attachment) => typeof attachment.Data === "string",
-                          )
-                          .map((a, i) => (
+                        {current.attachments.map((a, i) =>
+                          typeof a.Data === "string" ? (
                             <a
                               key={i}
+                              className={workspaceClassName("mail-attachment")}
                               download={a.Filename}
                               href={`data:application/octet-stream;base64,${a.Data}`}
                             >
@@ -966,7 +1142,36 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
                               </span>
                               <em>Download</em>
                             </a>
-                          ))}
+                          ) : (
+                            <button
+                              key={a.AttachmentID || i}
+                              className={workspaceClassName("mail-attachment")}
+                              type="button"
+                              disabled={
+                                !a.AttachmentID ||
+                                attachmentBusy ===
+                                  `${current.providerMessageId}:${a.AttachmentID}`
+                              }
+                              onClick={() =>
+                                void downloadAttachment(current, a)
+                              }
+                            >
+                              <Paperclip size={14} />
+                              <span>
+                                <strong>{a.Filename}</strong>
+                                {typeof a.Size === "number" && (
+                                  <small>{byteSize(a.Size)}</small>
+                                )}
+                              </span>
+                              <em>
+                                {attachmentBusy ===
+                                `${current.providerMessageId}:${a.AttachmentID}`
+                                  ? "Loading…"
+                                  : "Download"}
+                              </em>
+                            </button>
+                          ),
+                        )}
                       </div>
                     </section>
                   )}
