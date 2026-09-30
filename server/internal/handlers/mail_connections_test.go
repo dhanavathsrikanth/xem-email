@@ -87,3 +87,32 @@ func TestIMAPPaginationAndSearch(t *testing.T) {
 	require.Empty(t, criteria.Header)
 	require.Empty(t, criteria.Body)
 }
+
+func TestMailboxesReportsOnlyTruthfulProviderMetadata(t *testing.T) {
+	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(&models.IMAPConfig{}, &models.MailConnection{}))
+	googleID, customID := "google-imap", "custom-imap"
+	for _, mailbox := range []models.IMAPConfig{
+		{Base: models.Base{ID: googleID}, TeamID: "team", Username: "google@example.com", Host: "imap.gmail.com", Port: 993},
+		{Base: models.Base{ID: customID}, TeamID: "team", Username: "custom@example.com", Host: "imap.example.com", Port: 993},
+	} {
+		require.NoError(t, database.Session(&gorm.Session{SkipHooks: true}).Create(&mailbox).Error)
+	}
+	connection := models.MailConnection{Base: models.Base{ID: "connection"}, TeamID: "team", Provider: "GOOGLE_OAUTH", Address: "google@example.com", SMTPConfigID: "smtp", IMAPConfigID: &googleID, Active: true}
+	require.NoError(t, database.Session(&gorm.Session{SkipHooks: true}).Create(&connection).Error)
+
+	recorder := httptest.NewRecorder()
+	context := echo.New().NewContext(httptest.NewRequest(http.MethodGet, "/", nil), recorder)
+	context.Set("teamID", "team")
+	require.NoError(t, (&MailConnectionsHandler{DB: database}).Mailboxes(context))
+	var rows []struct {
+		ID       string `json:"id"`
+		Provider string `json:"provider"`
+	}
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &rows))
+	require.ElementsMatch(t, []struct {
+		ID       string `json:"id"`
+		Provider string `json:"provider"`
+	}{{googleID, "GOOGLE_OAUTH"}, {customID, "CUSTOM"}}, rows)
+}

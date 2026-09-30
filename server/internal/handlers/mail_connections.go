@@ -60,10 +60,11 @@ func (h *MailConnectionsHandler) Mailboxes(c echo.Context) error {
 		Username     string `json:"username"`
 		Host         string `json:"host"`
 		SMTPConfigID string `json:"smtpConfigId,omitempty"`
+		Provider     string `json:"provider"`
 	}{}
 	// Legacy IMAP forms never set is_active; preserve their existing behavior.
 	// OAuth disconnection is authoritative on the linked connection row.
-	err := h.DB.Table("imap_configs AS i").Select("i.id, i.username, i.host, m.smtp_config_id").Joins("LEFT JOIN mail_connections m ON m.imap_config_id = i.id AND m.team_id = i.team_id").Where("i.team_id = ? AND i.is_deleted = false AND (m.id IS NULL OR m.active = true)", c.Get("teamID")).Scan(&rows).Error
+	err := h.DB.Table("imap_configs AS i").Select("i.id, i.username, i.host, m.smtp_config_id, COALESCE(NULLIF(m.provider, ''), 'CUSTOM') AS provider").Joins("LEFT JOIN mail_connections m ON m.imap_config_id = i.id AND m.team_id = i.team_id").Where("i.team_id = ? AND i.is_deleted = false AND (m.id IS NULL OR m.active = true)", c.Get("teamID")).Scan(&rows).Error
 	if err != nil {
 		return echo.NewHTTPError(500, "Unable to load mailboxes")
 	}

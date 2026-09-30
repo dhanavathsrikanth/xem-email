@@ -103,7 +103,7 @@ export function MailCompose({
       description="Choose a sender, write your message, and review before sending."
     >
       <form
-        className={workspaceClassName("product-form")}
+        className={workspaceClassName("product-form mail-compose-form")}
         onSubmit={async (event) => {
           event.preventDefault();
           if (submitting.current || preparingFiles.current) return;
@@ -297,7 +297,7 @@ export function MailCompose({
               type="file"
               multiple
               disabled={locked || readingFiles}
-              className="max-w-56 text-xs"
+              className="min-w-0 w-full max-w-full text-xs"
               onChange={async (event) => {
                 if (preparingFiles.current || submitting.current || submission)
                   return;

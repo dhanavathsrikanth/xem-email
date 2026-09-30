@@ -21,6 +21,8 @@ export interface IMAPEmail {
 export interface IMAPEmailResponse {
   emails: IMAPEmail[];
   total_emails: number;
+  next_before_uid?: number;
+  uidValidity?: number;
   limit: number;
   offset: number;
 }

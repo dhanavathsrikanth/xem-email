@@ -3,7 +3,6 @@ package utils
 import (
 	"fmt"
 	"io"
-	"log"
 	"net/mail"
 	"strings"
 	"time"
@@ -52,8 +51,10 @@ func ParseEmail(emailReader io.Reader) (*ParsedMail, error) {
 	if dateStr != "" {
 		parsedMail.Date, err = mail.ParseDate(dateStr)
 		if err != nil {
-			// Log non-fatal error, or decide if this should be fatal
-			log.Printf("Warning: Failed to parse date '%s': %v", dateStr, err)
+			// Malformed optional headers do not make the body unreadable. Do not
+			// log their raw values: mailbox content may contain secrets or control
+			// characters.
+			parsedMail.Date = time.Time{}
 		}
 	}
 
@@ -61,7 +62,7 @@ func ParseEmail(emailReader io.Reader) (*ParsedMail, error) {
 	if fromStr != "" {
 		parsedMail.From, err = mail.ParseAddressList(fromStr)
 		if err != nil {
-			log.Printf("Warning: Failed to parse 'From' addresses '%s': %v", fromStr, err)
+			parsedMail.From = nil
 		}
 	}
 
@@ -69,7 +70,7 @@ func ParseEmail(emailReader io.Reader) (*ParsedMail, error) {
 	if toStr != "" {
 		parsedMail.To, err = mail.ParseAddressList(toStr)
 		if err != nil {
-			log.Printf("Warning: Failed to parse 'To' addresses '%s': %v", toStr, err)
+			parsedMail.To = nil
 		}
 	}
 
@@ -77,7 +78,7 @@ func ParseEmail(emailReader io.Reader) (*ParsedMail, error) {
 	if ccStr != "" {
 		parsedMail.Cc, err = mail.ParseAddressList(ccStr)
 		if err != nil {
-			log.Printf("Warning: Failed to parse 'Cc' addresses '%s': %v", ccStr, err)
+			parsedMail.Cc = nil
 		}
 	}
 
@@ -85,7 +86,7 @@ func ParseEmail(emailReader io.Reader) (*ParsedMail, error) {
 	if replyToStr != "" {
 		parsedMail.ReplyTo, err = mail.ParseAddressList(replyToStr)
 		if err != nil {
-			log.Printf("Warning: Failed to parse 'Reply-To' addresses '%s': %v", replyToStr, err)
+			parsedMail.ReplyTo = nil
 		}
 	}
 

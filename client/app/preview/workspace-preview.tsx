@@ -3,7 +3,8 @@ import { DashboardPreview } from "./dashboard-preview";
 import { AssistantPreview } from "@/components/assistant/assistant-preview";
 import { SendingPreview } from "./sending-preview";
 import { workspaceClassName } from "@/lib/workspace-styles";
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { AppShell } from "@/components/app-shell";
 import { PreviewTransport, type Transport } from "@/lib/marketing/api";
 import { FormsPage } from "@/components/marketing/forms";
@@ -171,87 +172,208 @@ const newsletters = [
     editions: 0,
   },
 ];
-const mail = contacts.map((c, i) => ({
-  id: `preview-mailbox:INBOX:1:${i+1}`,
-  uid: i+1,
+const previewMailBody = `<p>Hi Alex,</p><p>Hope you had a smooth start to the week.</p><p>I’ve attached the revised campaign plan for review. The team moved more budget into community partnerships, reduced the broad awareness spend, and kept a small reserve for launch week.</p><p>Could you review the channel split and share your recommendation before Thursday’s planning session?</p><p>Thanks,<br>Ava</p>`;
+const featuredMail = contacts.map((c, i) => ({
+  id: `preview-mailbox:INBOX:1:${i + 1}`,
+  uid: 48 - i,
   uidValidity: 1,
   messageId: `<message-${i}@example.com>`,
   subject: [
-    "Re: Sitemap refinements",
+    "Campaign plan review: community partnerships, launch reserve, and the Thursday decision",
     "A few ideas for Sunday’s edition",
     "Your next chapter starts here",
     "Let’s talk about the launch",
     "Community notes · September",
     "Something worth sharing",
   ][i],
-  from: `${c.firstName} ${c.lastName} <${c.email}>`,
+  from:
+    i === 0
+      ? "Ava Thompson, Community Partnerships and Editorial <ava.thompson.partnerships@example.com>"
+      : `${c.firstName} ${c.lastName} <${c.email}>`,
   to: "Alex <alex@example.com>",
-  cc: "",
-  body: emailHTML,
+  cc:
+    i === 0
+      ? "Priya Shah <priya@example.com>, Rowan Lee <rowan@example.com>"
+      : "",
+  body: i === 0 ? previewMailBody : emailHTML,
   date: stamp,
-  flags: i === 0 ? ["\\Flagged"] : [],
-  attachments: [],
+  flags: i === 0 ? ["\\Flagged"] : i > 2 ? ["\\Seen"] : [],
+  attachments:
+    i === 0
+      ? [
+          { Filename: "campaign-plan.pdf", Data: "UHJldmlldyBmaXh0dXJl" },
+          { Filename: "channel-budget.xlsx", Data: "UHJldmlldyBmaXh0dXJl" },
+        ]
+      : [],
 }));
-const transport: Transport = async <T,>(
-  path: string,
-  method = "GET",
-  body?: unknown,
-) => {
-  if (method !== "GET")
-    throw new Error(
-      "Visual preview only. Changes and email sending are available in your authenticated workspace.",
-    );
-  if (path === "mail-connections/mailboxes") return [{id:"preview-mailbox", username:"alex@example.com", host:"imap.gmail.com", smtpConfigId:"preview-sender"}] as T;
-  if (path === "mail-connections/senders") return [{id:"preview-sender", fromEmail:"alex@example.com", provider:"GOOGLE_OAUTH", isDefault:true}, {id:"preview-cloudflare", fromEmail:"notifications@example.com", provider:"CLOUDFLARE", isDefault:false}] as T;
-  if (path === "mail-connections") return {googleConfigured:true, googleAvailable:true, connections:[{id:"preview-google", provider:"GOOGLE_OAUTH", address:"alex@example.com", smtpConfigId:"preview-sender", imapConfigId:"preview-mailbox"}]} as T;
-  if (path.startsWith("imap/folders")) return [{Name:"INBOX", Total:6}, {Name:"Sent", Total:24}, {Name:"Drafts", Total:2}, {Name:"Archive", Total:18}] as T;
-  if (path.startsWith("marketing/contacts?")) {
-    const params = new URLSearchParams(path.split("?")[1]);
-    const search = (params.get("search") || "").toLowerCase();
-    const stage = params.get("stage");
-    const limit = Number(params.get("limit")) || 10;
-    const filtered = contacts.filter(
-      (c) =>
-        (!stage || (c.lifecycleStage || "LEAD") === stage) &&
-        [c.firstName, c.lastName, c.email, c.company]
-          .join(" ")
-          .toLowerCase()
-          .includes(search),
-    );
-    const page = Math.min(
-      Number(params.get("page")) || 1,
-      Math.max(1, Math.ceil(filtered.length / limit)),
-    );
-    return {
-      data: filtered.slice((page - 1) * limit, page * limit).map((c) => ({
-        ...c,
-        listName: options.lists.find((l) => l.id === c.listId)?.name || "",
-      })),
-      total: filtered.length,
-      page,
-      limit,
-      summary: {
-        total: contacts.length,
-        qualified: contacts.filter((c) => c.lifecycleStage === "QUALIFIED")
-          .length,
-        customers: contacts.filter((c) => c.lifecycleStage === "CUSTOMER")
-          .length,
-        subscribed: contacts.filter((c) => c.status === "ACTIVE").length,
-      },
-    } as T;
-  }
-  const result =
-    path === "marketing/options"
-      ? options
-      : path === "marketing/forms"
-        ? forms
-        : path === "marketing/newsletters"
-          ? newsletters
-          : path.startsWith("contacts?")
-            ? { data: contacts }
-            : path === "automations"
-              ? []
-              : path.startsWith("emails?")
+const mail = [
+  ...featuredMail,
+  ...Array.from({ length: 42 }, (_, index) => ({
+    ...featuredMail[(index + 1) % featuredMail.length],
+    id: `preview-mailbox:INBOX:1:${42 - index}`,
+    uid: 42 - index,
+    messageId: `<archive-${42 - index}@example.com>`,
+    subject:
+      [
+        "Notes from customer research",
+        "Re: October editorial calendar",
+        "Invitation: community roundtable",
+        "A quick question about the launch",
+      ][index % 4] + ` · ${42 - index}`,
+    date: new Date(Date.parse(stamp) - (index + 1) * 36e5).toISOString(),
+    flags: ["\\Seen"],
+    attachments: [],
+  })),
+];
+let previewIncoming: (typeof mail)[number][] = [];
+type InboxScenario =
+  | "loaded"
+  | "empty"
+  | "loading"
+  | "error"
+  | "summary-disabled"
+  | "summary-retry";
+const createTransport = (scenario: InboxScenario): Transport => {
+  let summaryAttempts = 0;
+  return async <T,>(path: string, method = "GET", body?: unknown) => {
+    if (path === "assistant/mail-summary" && method === "POST") {
+      summaryAttempts += 1;
+      if (scenario === "summary-retry" && summaryAttempts === 1)
+        throw new Error("The AI provider is temporarily unavailable.");
+      return {
+        summary:
+          "Ava shared a revised campaign plan and wants approval of the channel split before Thursday’s planning session.",
+        keyPoints: [
+          "More budget moved to community partnerships.",
+          "Broad awareness spend was reduced.",
+          "A launch-week reserve remains available.",
+        ],
+        actionItems: [
+          "Review the channel split.",
+          "Send a recommendation before Thursday.",
+        ],
+        truncated: false,
+      } as T;
+    }
+    if (method !== "GET")
+      throw new Error(
+        "Visual preview only. Changes and email sending are available in your authenticated workspace.",
+      );
+    if (path === "mail-connections/mailboxes")
+      return [
+        {
+          id: `preview-mailbox-${scenario}`,
+          username: "alex@example.com",
+          host: "imap.gmail.com",
+          provider: "GOOGLE_OAUTH",
+          smtpConfigId: "preview-sender",
+        },
+        {
+          id: `preview-icloud-${scenario}`,
+          username: "alex@icloud.com",
+          host: "imap.mail.me.com",
+          provider: "CUSTOM",
+        },
+        {
+          id: `preview-imap-${scenario}`,
+          username: "team@example.org",
+          host: "mail.example.org",
+          provider: "CUSTOM",
+        },
+      ] as T;
+    if (path === "assistant/mail-summary")
+      return { enabled: scenario !== "summary-disabled" } as T;
+    if (path.startsWith("imap/head")) {
+      const available = [...previewIncoming, ...mail];
+      return {
+        total_emails: available.length,
+        uidValidity: 1,
+        latest_uid: Math.max(0, ...available.map((item) => item.uid)),
+      } as T;
+    }
+    if (path === "mail-connections/senders")
+      return [
+        {
+          id: "preview-sender",
+          fromEmail: "alex@example.com",
+          provider: "GOOGLE_OAUTH",
+          isDefault: true,
+        },
+        {
+          id: "preview-cloudflare",
+          fromEmail: "notifications@example.com",
+          provider: "CLOUDFLARE",
+          isDefault: false,
+        },
+      ] as T;
+    if (path === "mail-connections")
+      return {
+        googleConfigured: true,
+        googleAvailable: true,
+        connections: [
+          {
+            id: "preview-google",
+            provider: "GOOGLE_OAUTH",
+            address: "alex@example.com",
+            smtpConfigId: "preview-sender",
+            imapConfigId: "preview-mailbox",
+          },
+        ],
+      } as T;
+    if (path.startsWith("imap/folders"))
+      return [
+        { Name: "INBOX", Total: 6 },
+        { Name: "Sent", Total: 24 },
+        { Name: "Drafts", Total: 2 },
+        { Name: "Archive", Total: 18 },
+      ] as T;
+    if (path.startsWith("marketing/contacts?")) {
+      const params = new URLSearchParams(path.split("?")[1]);
+      const search = (params.get("search") || "").toLowerCase();
+      const stage = params.get("stage");
+      const limit = Number(params.get("limit")) || 10;
+      const filtered = contacts.filter(
+        (c) =>
+          (!stage || (c.lifecycleStage || "LEAD") === stage) &&
+          [c.firstName, c.lastName, c.email, c.company]
+            .join(" ")
+            .toLowerCase()
+            .includes(search),
+      );
+      const page = Math.min(
+        Number(params.get("page")) || 1,
+        Math.max(1, Math.ceil(filtered.length / limit)),
+      );
+      return {
+        data: filtered.slice((page - 1) * limit, page * limit).map((c) => ({
+          ...c,
+          listName: options.lists.find((l) => l.id === c.listId)?.name || "",
+        })),
+        total: filtered.length,
+        page,
+        limit,
+        summary: {
+          total: contacts.length,
+          qualified: contacts.filter((c) => c.lifecycleStage === "QUALIFIED")
+            .length,
+          customers: contacts.filter((c) => c.lifecycleStage === "CUSTOMER")
+            .length,
+          subscribed: contacts.filter((c) => c.status === "ACTIVE").length,
+        },
+      } as T;
+    }
+    const result =
+      path === "marketing/options"
+        ? options
+        : path === "marketing/forms"
+          ? forms
+          : path === "marketing/newsletters"
+            ? newsletters
+            : path.startsWith("contacts?")
+              ? { data: contacts }
+              : path === "automations"
+                ? []
+                : path.startsWith("emails?")
                   ? {
                       data: mail.map((m, i) => ({
                         ...m,
@@ -264,16 +386,112 @@ const transport: Transport = async <T,>(
                       page: 1,
                     }
                   : path.startsWith("imap/emails")
-                    ? { emails: mail, total_emails: 6, offset: 0, limit: 20 }
+                    ? scenario === "loading"
+                      ? await new Promise<T>(() => {})
+                      : scenario === "error"
+                        ? (() => {
+                            throw new Error(
+                              "The preview mailbox could not be reached.",
+                            );
+                          })()
+                        : scenario === "empty"
+                          ? {
+                              emails: [],
+                              total_emails: 0,
+                              offset: 0,
+                              limit: 20,
+                              uidValidity: 1,
+                            }
+                          : (() => {
+                              const params = new URLSearchParams(
+                                path.split("?")[1],
+                              );
+                              const before =
+                                Number(params.get("before_uid")) ||
+                                Number.MAX_SAFE_INTEGER;
+                              const available = [...previewIncoming, ...mail]
+                                .filter((item) => item.uid < before)
+                                .sort((a, b) => b.uid - a.uid);
+                              const emails = available.slice(0, 20);
+                              return {
+                                emails,
+                                total_emails:
+                                  previewIncoming.length + mail.length,
+                                offset: 0,
+                                limit: 20,
+                                uidValidity: 1,
+                                next_before_uid:
+                                  available.length > 20
+                                    ? emails.at(-1)?.uid
+                                    : undefined,
+                              };
+                            })()
                     : [];
-  return result as T;
+    return result as T;
+  };
 };
 export function WorkspacePreview() {
+  const queryClient = useQueryClient();
   const [page, setPage] = useState("/dashboard");
+  const [inboxScenario, setInboxScenario] = useState<InboxScenario>("loaded");
+  const transport = useMemo(
+    () => createTransport(inboxScenario),
+    [inboxScenario],
+  );
   return (
-    <PreviewTransport.Provider value={transport}>
-      <div className={workspaceClassName("preview-banner !h-[26px] whitespace-nowrap overflow-hidden !text-[9px]")}>
-        LOCAL PREVIEW · Sample data · Sending disabled
+    <PreviewTransport.Provider key={inboxScenario} value={transport}>
+      <div
+        className={workspaceClassName(
+          "preview-banner !h-[26px] whitespace-nowrap overflow-x-auto !text-[9px] flex items-center justify-start gap-2 !px-2 sm:justify-center sm:gap-3",
+        )}
+      >
+        <span className="hidden sm:inline">
+          LOCAL PREVIEW · Sample data · Sending disabled
+        </span>
+        <span className="sm:hidden">Preview</span>
+        {page === "/inbox" && (
+          <>
+            <label className="flex items-center gap-1.5">
+              <span className="hidden sm:inline">Inbox state</span>
+              <select
+                className="h-5 rounded border border-border bg-card px-1"
+                value={inboxScenario}
+                onChange={(event) => {
+                  queryClient.removeQueries({ queryKey: ["marketing"] });
+                  setInboxScenario(event.target.value as InboxScenario);
+                }}
+              >
+                <option value="loaded">Loaded</option>
+                <option value="empty">Empty</option>
+                <option value="loading">Loading</option>
+                <option value="error">Error</option>
+                <option value="summary-disabled">Summary disabled</option>
+                <option value="summary-retry">Summary retry</option>
+              </select>
+            </label>
+            <button
+              aria-label="Receive sample email"
+              className="underline"
+              onClick={() => {
+                if (!previewIncoming.length)
+                  previewIncoming = [
+                    {
+                      ...featuredMail[0],
+                      id: "preview-mailbox:INBOX:1:49",
+                      uid: 49,
+                      messageId: "<incoming-49@example.com>",
+                      subject: "New: launch approval needed today",
+                      date: new Date().toISOString(),
+                      flags: [],
+                    },
+                  ];
+              }}
+            >
+              <span className="hidden sm:inline">Receive sample email</span>
+              <span className="sm:hidden">Sample mail</span>
+            </button>
+          </>
+        )}
       </div>
       <div
         className="[&_.product-frame]:!h-[calc(100dvh-26px)]"
@@ -309,7 +527,11 @@ export function WorkspacePreview() {
           ) : page === "/inbox" ? (
             <InboxPage />
           ) : page === "/settings/imap" || page === "/settings/smtp" ? (
-            <div className="p-6"><MailConnections provider={page === "/settings/imap" ? "google" : "cloudflare"}/></div>
+            <div className="p-6">
+              <MailConnections
+                provider={page === "/settings/imap" ? "google" : "cloudflare"}
+              />
+            </div>
           ) : page === "/forms" ? (
             <FormsPage />
           ) : (

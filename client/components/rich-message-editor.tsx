@@ -28,9 +28,11 @@ export function RichMessageEditor({
           immediatelyRender: false,
           hasMenuBar: true,
           spellCheck: true,
-          wrapClassName: "!max-w-none !border-0 !rounded-none",
+          toolbarClassName: "!flex-wrap !gap-1 !max-w-full",
+          wrapClassName: "!min-w-0 !max-w-full !border-0 !rounded-none",
           bodyClassName: "!m-0 !bg-white !p-0",
-          contentClassName: "min-h-64 !px-6 !py-4 text-base leading-relaxed",
+          contentClassName:
+            "min-h-64 !px-4 sm:!px-6 !py-4 text-base leading-relaxed",
         }}
       />
       <p className="border-t border-border bg-background px-4 py-2 text-xs text-muted-foreground">

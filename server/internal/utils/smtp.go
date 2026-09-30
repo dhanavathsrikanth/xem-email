@@ -47,12 +47,20 @@ type EmailHandler struct {
 
 // NewEmailHandler creates a new EmailHandler with rate limiting
 func NewEmailHandler(maxSendRate int) *EmailHandler {
+	maxSendRate = validSendRate(maxSendRate)
 	return &EmailHandler{
 		NotifyFailures: os.Getenv("SERVICE_NOTIFICATIONS_ENABLED") == "true",
 		rateLimiter:    make(chan struct{}, maxSendRate),
 		smtpRateLimits: make(map[string]chan struct{}),
 		logger:         logger.New("EMAIL_HANDLER"),
 	}
+}
+
+func validSendRate(rate int) int {
+	if rate < 1 {
+		return 1
+	}
+	return rate
 }
 
 // Registered once during startup; all delivery paths share recipient policy.
@@ -241,13 +249,14 @@ func (h *EmailHandler) SendBatchEmails(emails []*models.Email, smtpConfig *model
 
 	h.logger.Info("📤 Starting to send batch emails, total: %d", len(emails))
 
-	safeBatchSize := min(len(emails), smtpConfig.MaxSendRate)
+	safeBatchSize := min(len(emails), validSendRate(smtpConfig.MaxSendRate))
 
 	for i := 0; i < len(emails); i += safeBatchSize {
 		end := min(i+safeBatchSize, len(emails))
 		batchEmails := emails[i:end]
 
-		for _, email := range batchEmails {
+		for offset, email := range batchEmails {
+			index := i + offset
 			wg.Add(1)
 			go func(index int, e *models.Email) {
 				defer wg.Done()
@@ -264,7 +273,7 @@ func (h *EmailHandler) SendBatchEmails(emails []*models.Email, smtpConfig *model
 					Error: err,
 				}
 				time.Sleep(time.Second * 1)
-			}(i, email)
+			}(index, email)
 		}
 	}
 

@@ -26,8 +26,8 @@ import {
   Monitor,
   Moon,
   Newspaper,
-  PanelLeftClose,
-  PanelLeftOpen,
+  ChevronsLeft,
+  ChevronsRight,
   PanelsTopLeft,
   Search,
   Send,
@@ -125,6 +125,31 @@ const sharedHeadingPages = [
   "/team",
 ];
 
+const isInboxPath = (path: string) =>
+  path === "/inbox" || path.startsWith("/inbox/");
+
+export function useInboxSidebarCollapse(active: string) {
+  const [collapsed, setCollapsed] = useState(() => isInboxPath(active));
+  const previousActive = useRef(active);
+  const beforeInbox = useRef(false);
+
+  useEffect(() => {
+    const wasInbox = isInboxPath(previousActive.current);
+    const isInbox = isInboxPath(active);
+
+    if (!wasInbox && isInbox) {
+      beforeInbox.current = collapsed;
+      setCollapsed(true);
+    } else if (wasInbox && !isInbox) {
+      setCollapsed(beforeInbox.current);
+    }
+
+    previousActive.current = active;
+  }, [active, collapsed]);
+
+  return [collapsed, setCollapsed] as const;
+}
+
 export function AppShell({
   children,
   previewPage,
@@ -141,9 +166,9 @@ export function AppShell({
   const [mobile, setMobile] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [search, setSearch] = useState("");
-  const [collapsed, setCollapsed] = useState(false);
   const searchResultsRef = useRef<HTMLDivElement>(null);
   const active = previewPage || pathname;
+  const [collapsed, setCollapsed] = useInboxSidebarCollapse(active);
 
   useEffect(() => {
     function keydown(event: KeyboardEvent) {
@@ -277,7 +302,7 @@ export function AppShell({
               aria-label="Collapse sidebar"
               onClick={() => setCollapsed(true)}
             >
-              <PanelLeftClose size={16} strokeWidth={1.6} />
+              <ChevronsLeft size={16} strokeWidth={1.6} />
             </button>
           )}
         </div>
@@ -288,7 +313,7 @@ export function AppShell({
             aria-label="Expand sidebar"
             onClick={() => setCollapsed(false)}
           >
-            <PanelLeftOpen size={17} strokeWidth={1.6} />
+            <ChevronsRight size={17} strokeWidth={1.6} />
           </button>
         )}
         <button

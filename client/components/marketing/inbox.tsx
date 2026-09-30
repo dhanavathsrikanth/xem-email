@@ -1,6 +1,6 @@
 "use client";
 import { workspaceClassName } from "@/lib/workspace-styles";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import {
   Mail,
@@ -26,6 +26,8 @@ import { IMAPEmail, IMAPEmailResponse } from "@/types/imap";
 import { Button } from "@/components/ui/button";
 import { QueryState, Empty } from "./shared";
 import { MailCompose } from "./mail-compose";
+import { MailSummary } from "./mail-summary";
+import { MailboxSelect } from "./mailbox-select";
 import {
   ComposeValue,
   OutgoingAttachment,
@@ -51,14 +53,40 @@ function text(body: string) {
       .slice(0, 120) || ""
   );
 }
+function hasRemoteImages(body: string) {
+  return /<(?:img|source)\b[^>]+(?:src|srcset)\s*=\s*["']\s*https?:|background(?:-image)?\s*:\s*url\(\s*["']?\s*https?:/i.test(
+    body,
+  );
+}
+function attachmentSize(data: string) {
+  const bytes = Math.max(
+    0,
+    Math.floor((data.length * 3) / 4) -
+      (data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0),
+  );
+  return bytes < 1024
+    ? `${bytes} B`
+    : `${(bytes / 1024).toFixed(bytes < 10240 ? 1 : 0)} KB`;
+}
 type MailMessage = IMAPEmail & { status?: string; error?: string };
 type Mailbox = {
   id: string;
   username: string;
   host: string;
   smtpConfigId?: string;
+  provider?: string;
 };
-const messageKey = (m: MailMessage) => m.id || m.messageId;
+export const messageKey = (m: MailMessage) =>
+  m.id ||
+  (m.uid != null && m.uidValidity != null
+    ? `uid:${m.uidValidity}:${m.uid}`
+    : m.messageId);
+export const sortMailMessages = (messages: MailMessage[]) =>
+  [...messages].sort(
+    (a, b) =>
+      Number(b.flags?.includes("\\Flagged")) -
+      Number(a.flags?.includes("\\Flagged")),
+  );
 export function InboxPage() {
   return <MailboxPage mode="inbox" />;
 }
@@ -89,23 +117,67 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
   const [selected, setSelected] = useState<MailMessage | null>(null);
   const [compose, setCompose] = useState<ComposeValue | null>(null);
   const [flagBusy, setFlagBusy] = useState(false);
+  const [newMailAvailable, setNewMailAvailable] = useState(false);
+  const [epochVersion, setEpochVersion] = useState(0);
+  const epochRef = useRef<number | undefined>(undefined);
+  const pollInFlight = useRef(false);
+  const listScrollRef = useRef<HTMLDivElement>(null);
+  const loadSentinelRef = useRef<HTMLDivElement>(null);
+  const generation = `${scope}:${configId}:${folder}:${query}`;
+  const generationRef = useRef(generation);
+  generationRef.current = generation;
   useEffect(() => {
     setCompose(null);
   }, [scope]);
   useEffect(() => {
     setSelected(null);
     setImages(false);
+    setFlagBusy(false);
+    setNewMailAvailable(false);
+    epochRef.current = undefined;
   }, [scope, configId, folder, query]);
   const [images, setImages] = useState(false);
   const emails = useInfiniteQuery({
-    queryKey: ["marketing", scope, mode, configId, folder, query],
+    queryKey: ["marketing", scope, mode, configId, folder, query, epochVersion],
     enabled: ready && (outbox || !!configId),
-    initialPageParam: outbox ? 1 : 0,
+    initialPageParam: outbox ? 1 : (undefined as number | undefined),
     queryFn: async ({ pageParam }): Promise<IMAPEmailResponse> => {
-      if (!outbox)
-        return request<IMAPEmailResponse>(
-          `imap/emails?${new URLSearchParams({ folder, offset: String(pageParam), limit: "20", q: query, config_id: configId })}`,
+      if (!outbox) {
+        const queryGeneration = generation;
+        const params = new URLSearchParams({
+          folder,
+          limit: "20",
+          q: query,
+          config_id: configId,
+        });
+        if (pageParam) params.set("before_uid", String(pageParam));
+        const response = await request<IMAPEmailResponse>(
+          `imap/emails?${params}`,
         );
+        if (
+          generationRef.current === queryGeneration &&
+          epochRef.current === undefined
+        )
+          epochRef.current = response.uidValidity;
+        else if (
+          generationRef.current === queryGeneration &&
+          pageParam &&
+          response.uidValidity !== undefined &&
+          response.uidValidity !== epochRef.current
+        ) {
+          epochRef.current = response.uidValidity;
+          queueMicrotask(() => {
+            if (generationRef.current === queryGeneration) {
+              setSelected(null);
+              setEpochVersion((value) => value + 1);
+            }
+          });
+          throw new Error(
+            "The mailbox changed while loading. Refreshing the message list.",
+          );
+        }
+        return response;
+      }
       const result = await request<{
         data: (Omit<MailMessage, "attachments"> & {
           id: string;
@@ -149,11 +221,11 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
       };
     },
     getNextPageParam: (last, pages) =>
-      last.emails.length > 0 && last.offset + last.limit < last.total_emails
-        ? outbox
+      outbox
+        ? last.emails.length > 0 && last.offset + last.limit < last.total_emails
           ? pages.length + 1
-          : last.offset + last.limit
-        : undefined,
+          : undefined
+        : last.next_before_uid,
     retry: 1,
   });
   const allRows: MailMessage[] =
@@ -166,11 +238,129 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
             .includes(query.toLowerCase()),
         )
       : allRows;
+
+  useEffect(() => {
+    if (outbox || !ready || !configId || query || !emails.isSuccess) return;
+    let stopped = false;
+    const poll = async () => {
+      if (
+        document.visibilityState !== "visible" ||
+        !navigator.onLine ||
+        stopped ||
+        pollInFlight.current
+      )
+        return;
+      pollInFlight.current = true;
+      try {
+        const head = await request<{
+          latest_uid: number;
+          uidValidity?: number;
+        }>(
+          `imap/head?${new URLSearchParams({ folder, q: query, config_id: configId })}`,
+        );
+        if (stopped) return;
+        if (
+          epochRef.current !== undefined &&
+          head.uidValidity !== undefined &&
+          head.uidValidity !== epochRef.current
+        ) {
+          epochRef.current = head.uidValidity;
+          setSelected(null);
+          setNewMailAvailable(false);
+          setEpochVersion((value) => value + 1);
+          return;
+        }
+        const highest = Math.max(
+          0,
+          ...allRows.map((message) => message.uid ?? 0),
+        );
+        setNewMailAvailable(head.latest_uid > highest);
+      } catch {
+        /* Poll failures stay quiet; the normal inbox query owns visible errors. */
+      } finally {
+        pollInFlight.current = false;
+      }
+    };
+    const timer = window.setInterval(() => void poll(), 30_000);
+    const resume = () => void poll();
+    document.addEventListener("visibilitychange", resume);
+    window.addEventListener("online", resume);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", resume);
+      window.removeEventListener("online", resume);
+    };
+  }, [
+    outbox,
+    ready,
+    configId,
+    folder,
+    query,
+    request,
+    allRows,
+    emails.isSuccess,
+  ]);
+
+  useEffect(() => {
+    const sentinel = loadSentinelRef.current;
+    const root = listScrollRef.current;
+    if (
+      typeof IntersectionObserver === "undefined" ||
+      !sentinel ||
+      !root ||
+      !emails.hasNextPage ||
+      emails.isFetching ||
+      emails.isFetchNextPageError
+    )
+      return;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) void emails.fetchNextPage();
+      },
+      { root, rootMargin: "160px" },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [
+    emails.hasNextPage,
+    emails.isFetching,
+    emails.isFetchNextPageError,
+    emails.fetchNextPage,
+  ]);
   const total = emails.data?.pages[0]?.total_emails || 0;
-  const index = rows.findIndex(
+  const displayedFolders = outbox
+    ? [
+        "SENT",
+        "ACCEPTED",
+        "PARTIAL",
+        "PENDING",
+        "SENDING",
+        "FAILED",
+        "DELIVERY_UNKNOWN",
+        "SUPPRESSED",
+        "BOUNCED",
+        "OPENED",
+        "CLICKED",
+      ].map((Name) => ({ Name, Total: 0 }))
+    : folders.data?.filter(
+        (item) => !item.Attributes?.includes("\\Noselect"),
+      ) || [{ Name: "INBOX", Total: total }];
+  const displayedRows = sortMailMessages(rows);
+  const index = displayedRows.findIndex(
     (e) => messageKey(e) === (selected ? messageKey(selected) : undefined),
   );
   const current = selected;
+  useEffect(() => {
+    if (
+      selected &&
+      !emails.isFetching &&
+      emails.data &&
+      !rows.some((row) => messageKey(row) === messageKey(selected))
+    ) {
+      setSelected(null);
+    }
+  }, [emails.data, emails.isFetching, rows, selected]);
   const choose = (m: MailMessage) => {
     setSelected(m);
     setImages(false);
@@ -178,6 +368,7 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
   async function changeFlag(flag: string) {
     if (!current?.uid || !current.uidValidity || flagBusy) return;
     const message = current;
+    const requestGeneration = generation;
     const enabled = !message.flags?.includes(flag);
     setFlagBusy(true);
     try {
@@ -192,6 +383,7 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
           enabled,
         },
       );
+      if (generationRef.current !== requestGeneration) return;
       const flags = enabled
         ? [...(message.flags ?? []), flag]
         : (message.flags ?? []).filter((f) => f !== flag);
@@ -202,9 +394,10 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
       );
       await emails.refetch();
     } catch (error) {
-      toast.error((error as Error).message);
+      if (generationRef.current === requestGeneration)
+        toast.error((error as Error).message);
     } finally {
-      setFlagBusy(false);
+      if (generationRef.current === requestGeneration) setFlagBusy(false);
     }
   }
   function reply(message: MailMessage): ComposeValue {
@@ -222,7 +415,7 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
   return (
     <div
       className={workspaceClassName(
-        `mail-workspace ${current ? "mail-open" : ""}`,
+        `mail-workspace ${current ? "mail-open" : "mail-idle"}`,
       )}
     >
       <aside className={workspaceClassName("mail-folders")}>
@@ -251,34 +444,17 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
           Compose
         </Button>
         {!outbox && (
-          <div className="px-4 pb-3">
-            <label
-              htmlFor="mailbox-choice"
-              className="text-xs text-muted-foreground"
-            >
-              Mailbox
-            </label>
-            <select
-              id="mailbox-choice"
-              className="mt-1 w-full rounded-md border bg-background p-2 text-xs"
+          <div className="pb-3 pt-3">
+            <MailboxSelect
               value={configId}
-              onChange={(e) => {
-                setChosenMailbox(e.target.value);
+              mailboxes={mailboxes.data ?? []}
+              disabled={mailboxes.isLoading}
+              onChange={(value) => {
+                setChosenMailbox(value);
                 setFolder("INBOX");
                 setSelected(null);
               }}
-            >
-              <option value="" disabled>
-                {mailboxes.isLoading
-                  ? "Loading mailboxes…"
-                  : "Choose a mailbox"}
-              </option>
-              {mailboxes.data?.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.username} · {m.host}
-                </option>
-              ))}
-            </select>
+            />
             {mailboxes.error && (
               <p role="alert" className="mt-2 text-xs text-destructive">
                 {mailboxes.error.message}
@@ -297,24 +473,7 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
           </div>
         )}
         <div className={workspaceClassName("mail-folder-list")}>
-          {(outbox
-            ? [
-                "SENT",
-                "ACCEPTED",
-                "PARTIAL",
-                "PENDING",
-                "SENDING",
-                "FAILED",
-                "DELIVERY_UNKNOWN",
-                "SUPPRESSED",
-                "BOUNCED",
-                "OPENED",
-                "CLICKED",
-              ].map((Name) => ({ Name, Total: 0 }))
-            : folders.data?.filter(
-                (f) => !f.Attributes?.includes("\\Noselect"),
-              ) || [{ Name: "INBOX", Total: total }]
-          ).map((f) => (
+          {displayedFolders.map((f) => (
             <button
               key={f.Name}
               className={folder === f.Name ? "active" : ""}
@@ -357,7 +516,11 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
           )}
         </div>
       </aside>
-      <section className={workspaceClassName("mail-list-pane")}>
+      <section
+        className={workspaceClassName(
+          `mail-list-pane ${current ? "mail-list-collapsed" : ""}`,
+        )}
+      >
         <div className={workspaceClassName("mail-list-heading")}>
           <div>
             <h1>
@@ -374,6 +537,35 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
             <RefreshCw />
           </button>
         </div>
+        {!outbox && (
+          <div className={workspaceClassName("mail-mobile-actions")}>
+            <MailboxSelect
+              value={configId}
+              mailboxes={mailboxes.data ?? []}
+              disabled={mailboxes.isLoading}
+              onChange={(value) => {
+                setChosenMailbox(value);
+                setFolder("INBOX");
+                setSelected(null);
+              }}
+            />
+          </div>
+        )}
+        <select
+          aria-label="Choose mail folder"
+          className={workspaceClassName("mail-mobile-folder")}
+          value={folder}
+          onChange={(event) => {
+            setFolder(event.target.value);
+            setSelected(null);
+          }}
+        >
+          {displayedFolders.map((item) => (
+            <option key={item.Name} value={item.Name}>
+              {item.Name}
+            </option>
+          ))}
+        </select>
         <form
           className={workspaceClassName("mail-search")}
           onSubmit={(e) => {
@@ -393,12 +585,34 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
           />
           <kbd>↵</kbd>
         </form>
-        <div className={workspaceClassName("mail-list-scroll")}>
+        <div
+          ref={listScrollRef}
+          className={workspaceClassName("mail-list-scroll")}
+        >
+          {newMailAvailable && (
+            <button
+              className={workspaceClassName("mail-new-banner")}
+              onClick={() => {
+                setNewMailAvailable(false);
+                setSelected(null);
+                epochRef.current = undefined;
+                setEpochVersion((value) => value + 1);
+                listScrollRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+              }}
+            >
+              New messages available · Show
+            </button>
+          )}
           <QueryState
             loading={emails.isLoading}
-            error={emails.error}
+            error={emails.data ? null : emails.error}
             retry={() => emails.refetch()}
           />
+          {emails.isFetchNextPageError && (
+            <p role="alert" className="px-3 py-2 text-xs text-muted-foreground">
+              Older messages could not be loaded. Use the button below to retry.
+            </p>
+          )}
           {!emails.isLoading && !emails.error && !rows.length && (
             <Empty
               title="A little peace and quiet"
@@ -415,66 +629,67 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
               PINNED
             </div>
           )}
-          {[...rows]
-            .sort(
-              (a, b) =>
-                Number(b.flags?.includes("\\Flagged")) -
-                Number(a.flags?.includes("\\Flagged")),
-            )
-            .map((m, i) => (
-              <button
-                key={messageKey(m) || `${m.date}-${i}`}
-                className={workspaceClassName(
-                  `mail-list-item ${current && messageKey(current) === messageKey(m) ? "selected" : ""}`,
-                )}
-                onClick={() => choose(m)}
-              >
-                <span
-                  className={workspaceClassName("mail-avatar")}
-                  style={{
-                    background: [
-                      "var(--muted)",
-                      "var(--secondary)",
-                      "var(--muted)",
-                      "var(--secondary)",
-                    ][i % 4],
-                  }}
-                >
-                  {sender(outbox ? m.to : m.from)
-                    .slice(0, 1)
-                    .toUpperCase()}
-                </span>
-                <div>
-                  <div className={workspaceClassName("mail-item-line")}>
-                    <strong>{sender(outbox ? m.to : m.from)}</strong>
-                    <time>
-                      {m.date
-                        ? new Date(m.date).toLocaleDateString(undefined, {
-                            month: "short",
-                            day: "numeric",
-                          })
-                        : ""}
-                    </time>
-                  </div>
-                  <span className={workspaceClassName("mail-subject")}>
-                    {m.subject || "(No subject)"}
-                  </span>
-                  <p>
-                    {outbox && m.status ? `${m.status} · ` : ""}
-                    {text(m.body)}
-                  </p>
-                </div>
-              </button>
-            ))}
-          {emails.hasNextPage && (
-            <Button
-              className="m-4"
-              variant="outline"
-              disabled={emails.isFetchingNextPage}
-              onClick={() => emails.fetchNextPage()}
+          {displayedRows.map((m, i) => (
+            <button
+              key={messageKey(m) || `${m.date}-${i}`}
+              className={workspaceClassName(
+                `mail-list-item ${!m.flags?.includes("\\Seen") ? "unread" : ""} ${current && messageKey(current) === messageKey(m) ? "selected" : ""}`,
+              )}
+              onClick={() => choose(m)}
             >
-              {emails.isFetchingNextPage ? "Loading…" : "Load more messages"}
-            </Button>
+              <span
+                className={workspaceClassName("mail-avatar")}
+                style={{
+                  background: [
+                    "var(--muted)",
+                    "var(--secondary)",
+                    "var(--muted)",
+                    "var(--secondary)",
+                  ][i % 4],
+                }}
+              >
+                {sender(outbox ? m.to : m.from)
+                  .slice(0, 1)
+                  .toUpperCase()}
+              </span>
+              <div>
+                <div className={workspaceClassName("mail-item-line")}>
+                  <strong>{sender(outbox ? m.to : m.from)}</strong>
+                  <time>
+                    {m.date
+                      ? new Date(m.date).toLocaleDateString(undefined, {
+                          month: "short",
+                          day: "numeric",
+                        })
+                      : ""}
+                  </time>
+                </div>
+                <span className={workspaceClassName("mail-subject")}>
+                  {m.subject || "(No subject)"}
+                </span>
+                <p>
+                  {outbox && m.status ? `${m.status} · ` : ""}
+                  {text(m.body)}
+                </p>
+              </div>
+            </button>
+          ))}
+          {emails.hasNextPage && (
+            <>
+              <div ref={loadSentinelRef} aria-hidden="true" className="h-px" />
+              <Button
+                className="m-4"
+                variant="outline"
+                disabled={emails.isFetchingNextPage}
+                onClick={() => emails.fetchNextPage()}
+              >
+                {emails.isFetchingNextPage
+                  ? "Loading…"
+                  : emails.isFetchNextPageError
+                    ? "Retry loading older messages"
+                    : "Load more messages"}
+              </Button>
+            </>
           )}
         </div>
       </section>
@@ -543,7 +758,7 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
                 className={workspaceClassName("icon-button")}
                 aria-label="Previous message"
                 disabled={index <= 0}
-                onClick={() => choose(rows[index - 1])}
+                onClick={() => choose(displayedRows[index - 1])}
               >
                 <ArrowLeft />
               </button>
@@ -551,7 +766,7 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
                 className={workspaceClassName("icon-button")}
                 aria-label="Next message"
                 disabled={index >= rows.length - 1}
-                onClick={() => choose(rows[index + 1])}
+                onClick={() => choose(displayedRows[index + 1])}
               >
                 <ArrowRight />
               </button>
@@ -608,34 +823,55 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
                   </>
                 )}
               </p>
-              <div className={workspaceClassName("remote-images-note")}>
-                {images
-                  ? "Remote images enabled for this message."
-                  : "Remote images are hidden to protect your privacy."}{" "}
-                {!images && (
-                  <button onClick={() => setImages(true)}>Load images</button>
+              {!outbox &&
+                current.uid != null &&
+                current.uidValidity != null && (
+                  <MailSummary
+                    configId={configId}
+                    folder={folder}
+                    uid={current.uid}
+                    uidValidity={current.uidValidity}
+                  />
                 )}
-              </div>
+              {hasRemoteImages(current.body) && (
+                <div className={workspaceClassName("remote-images-note")}>
+                  {images
+                    ? "Remote images enabled for this message."
+                    : "Remote images are hidden to protect your privacy."}{" "}
+                  {!images && (
+                    <button onClick={() => setImages(true)}>Load images</button>
+                  )}
+                </div>
+              )}
               <iframe
                 className={workspaceClassName("mail-body")}
                 title="Email content"
                 sandbox=""
                 referrerPolicy="no-referrer"
-                srcDoc={`<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${images ? "https:" : ""} data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"><style>body{font:14px/1.8 Arial;color:#66606c;overflow-wrap:anywhere;margin:0;padding:5px}img{max-width:100%}</style>${current.body}`}
+                srcDoc={`<meta name="color-scheme" content="light"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${images ? "https:" : ""} data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"><style>:root{color-scheme:light}html,body{background:#fff}body{font:14px/1.8 Arial;color:#3f3b43;overflow-wrap:anywhere;margin:0;padding:16px}img{max-width:100%}</style>${current.body}`}
               />
               {current.attachments?.length > 0 && (
-                <div className={workspaceClassName("mail-attachments")}>
-                  {current.attachments.map((a, i) => (
-                    <a
-                      key={i}
-                      download={a.Filename}
-                      href={`data:application/octet-stream;base64,${a.Data}`}
-                    >
-                      <Paperclip size={14} />
-                      {a.Filename}
-                    </a>
-                  ))}
-                </div>
+                <section
+                  className={workspaceClassName("mail-attachment-section")}
+                >
+                  <h3>Attachments ({current.attachments.length})</h3>
+                  <div className={workspaceClassName("mail-attachments")}>
+                    {current.attachments.map((a, i) => (
+                      <a
+                        key={i}
+                        download={a.Filename}
+                        href={`data:application/octet-stream;base64,${a.Data}`}
+                      >
+                        <Paperclip size={14} />
+                        <span>
+                          <strong>{a.Filename}</strong>
+                          <small>{attachmentSize(a.Data)}</small>
+                        </span>
+                        <em>Download</em>
+                      </a>
+                    ))}
+                  </div>
+                </section>
               )}
               <Button
                 variant="outline"
@@ -657,6 +893,22 @@ function MailboxPage({ mode }: { mode: "inbox" | "outbox" }) {
           </div>
         )}
       </section>
+      {!current && !compose && (
+        <Button
+          aria-label="Compose message"
+          className={workspaceClassName("mail-compose-fab")}
+          onClick={() =>
+            setCompose({
+              to: "",
+              subject: "",
+              smtpConfigId: mailbox?.smtpConfigId,
+            })
+          }
+        >
+          <PencilLine />
+          Compose
+        </Button>
+      )}
       {compose && (
         <MailCompose
           key={scope}

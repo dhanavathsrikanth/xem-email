@@ -24,6 +24,8 @@ func SetupIMAPRoutes(e *echo.Echo, config *config.Config, db *gorm.DB) {
 	imap.GET("/folders", imapHandler.GetFolders, middleware.RequirePermissions(db, "imap_configs:read"))
 
 	imap.GET("/emails", imapHandler.GetEmails, middleware.RequirePermissions(db, "imap_configs:read"))
+	imap.GET("/head", imapHandler.GetHead, middleware.RequirePermissions(db, "imap_configs:read"))
+	imap.GET("/message", imapHandler.GetMessage, middleware.RequirePermissions(db, "imap_configs:read"))
 	imap.PATCH("/flags", imapHandler.ChangeFlags, middleware.RequirePermissions(db, "imap_configs:write"))
 
 	// test imap connection

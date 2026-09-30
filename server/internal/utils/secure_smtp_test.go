@@ -117,3 +117,10 @@ func TestSMTPRejectsMalformedSenderBeforeMailCommand(t *testing.T) {
 		})
 	}
 }
+
+func TestSendRateAlwaysAdvancesBatchLoop(t *testing.T) {
+	require.Equal(t, 1, validSendRate(0))
+	require.Equal(t, 1, validSendRate(-10))
+	require.Equal(t, 25, validSendRate(25))
+	require.Equal(t, 1, cap(NewEmailHandler(0).rateLimiter))
+}
