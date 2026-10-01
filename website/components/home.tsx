@@ -1186,6 +1186,21 @@ export function Home({ latestPosts }: { latestPosts: PostMeta[] }) {
                 <a className="mb-3 block hover:underline" href={contributeUrl}>
                   Contribute to Xem <span aria-hidden="true">↗</span>
                 </a>
+                <a className="mb-3 block hover:underline" href="/google-mail">
+                  Google mail · limited testing
+                </a>
+                <a className="mb-3 block hover:underline" href="/privacy">
+                  Privacy policy · draft
+                </a>
+                <a className="mb-3 block hover:underline" href="/data-deletion">
+                  Delete your data
+                </a>
+                <a
+                  className="mb-3 block hover:underline"
+                  href="mailto:team@xem.email"
+                >
+                  Contact the Xem team
+                </a>
                 <a className="block hover:underline" href="#questions">
                   FAQs
                 </a>

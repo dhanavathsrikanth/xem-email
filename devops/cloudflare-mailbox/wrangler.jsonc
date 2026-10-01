@@ -1,0 +1,31 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "xem-cloudflare-mailbox",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-30",
+  "r2_buckets": [
+    {
+      "binding": "MAILBOX_OBJECTS",
+      "bucket_name": "xem-cloudflare-mailbox"
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "MAILBOX_DB",
+      "database_name": "xem-cloudflare-mailbox",
+      "database_id": "replace-with-d1-database-id",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "vars": {
+    "MAILBOX_ADDRESS": "inbox@example.com"
+  },
+  "triggers": {
+    "crons": ["* * * * *"]
+  },
+  "observability": {
+    "enabled": true,
+    "logs": { "enabled": true, "head_sampling_rate": 1 },
+    "traces": { "enabled": true, "head_sampling_rate": 0.05 }
+  }
+}

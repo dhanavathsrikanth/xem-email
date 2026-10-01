@@ -1,0 +1,36 @@
+name: Cloudflare mailbox CI
+
+on:
+  pull_request:
+    paths:
+      - devops/cloudflare-mailbox/**
+      - .github/workflows/cloudflare-mailbox-ci.yml
+  push:
+    paths:
+      - devops/cloudflare-mailbox/**
+      - .github/workflows/cloudflare-mailbox-ci.yml
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: devops/cloudflare-mailbox
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.7.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: devops/cloudflare-mailbox/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run types
+      - run: pnpm test
+      - run: pnpm run check
+      - run: pnpm run deploy:check

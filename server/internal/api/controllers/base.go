@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"kori/internal/models"
 	"kori/internal/services"
 
 	"github.com/labstack/echo/v4"
@@ -180,6 +181,35 @@ func (c *BaseController[T]) Update(ctx echo.Context) error {
 	}
 
 	enforceOwner(ctx, &entity, ctx.Request().Method == "POST")
+	// Keep an existing write-only password only for the same login endpoint.
+	// Otherwise changing a hostname could transmit it to a different server.
+	switch input := any(&entity).(type) {
+	case *models.SMTPConfig:
+		if input.Password == "" {
+			stored, err := c.service.Get(ctx.Request().Context(), id)
+			if err != nil {
+				return echo.NewHTTPError(404, "Connection not found")
+			}
+			previous := any(stored).(*models.SMTPConfig)
+			if previous.Host != input.Host || previous.Port != input.Port || previous.Username != input.Username || previous.Provider != input.Provider {
+				return echo.NewHTTPError(400, "Enter the password again when changing the host, port, username or provider")
+			}
+			input.Password = previous.Password
+		}
+	case *models.IMAPConfig:
+		input.ID = id
+		if input.Password == "" {
+			stored, err := c.service.Get(ctx.Request().Context(), id)
+			if err != nil {
+				return echo.NewHTTPError(404, "Connection not found")
+			}
+			previous := any(stored).(*models.IMAPConfig)
+			if previous.Host != input.Host || previous.Port != input.Port || previous.Username != input.Username {
+				return echo.NewHTTPError(400, "Enter the password again when changing the host, port or username")
+			}
+			input.Password = previous.Password
+		}
+	}
 
 	if err := ctx.Validate(&entity); err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())

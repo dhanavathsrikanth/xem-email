@@ -11,7 +11,7 @@ export const formSchema = z.object({
   username: z.string().min(1, "Username is required"),
   requiresAuth: z.boolean().default(true),
   fromEmail: z.string().min(1, "From Email is required"),
-  password: z.string().min(1, "Password is required"),
+  password: z.string().default(""),
   isActive: z.boolean().default(true),
   supportsTls: z.boolean().default(true),
   maxSendRate: z
@@ -19,6 +19,6 @@ export const formSchema = z.object({
     .transform((val) => (typeof val === "string" ? parseInt(val) : val)),
   documentation: z.string().optional(),
   isDefault: z.boolean().default(false),
-});
+}).refine((value) => !!value.id || !!value.password, { path: ["password"], message: "Password is required" });
 
 export type SMTPConfig = z.infer<typeof formSchema>;

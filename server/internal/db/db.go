@@ -6,8 +6,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	stdlog "log"
 	"net"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 
 	"cloud.google.com/go/cloudsqlconn"
@@ -83,7 +86,10 @@ func Connect(cfg *config.Config) error {
 	log.Info("Connecting to database...")
 	maxRetries := 5
 	gormCfg := &gorm.Config{
-		Logger:                                   logger.Default.LogMode(logger.Info),
+		// SQL diagnostics must never interpolate credentials or mailbox content.
+		Logger: logger.New(stdlog.New(os.Stdout, "", stdlog.LstdFlags), logger.Config{
+			LogLevel: logger.Warn, SlowThreshold: time.Second, ParameterizedQueries: true,
+		}),
 		DisableForeignKeyConstraintWhenMigrating: true,
 		// Schema migrations change result shapes; do not cache prepared statements.
 		PrepareStmt:       false,
@@ -109,15 +115,16 @@ func Connect(cfg *config.Config) error {
 	return log.Error("failed to connect to database after %d attempts", fmt.Errorf("failed to connect to database after %d attempts", maxRetries))
 }
 
+func databaseDSN(cfg config.DatabaseConfig) string {
+	quote := func(value string) string {
+		return "'" + strings.NewReplacer("\\", "\\\\", "'", "\\'").Replace(value) + "'"
+	}
+	return fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%d sslmode=%s",
+		quote(cfg.Host), quote(cfg.User), quote(cfg.Password), quote(cfg.Name), cfg.Port, quote(cfg.SSLMode))
+}
+
 func connectWithDSN(cfg *config.Config, gormCfg *gorm.Config) error {
-	dsn := fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%d sslmode=%s",
-		cfg.Database.Host,
-		cfg.Database.User,
-		cfg.Database.Password,
-		cfg.Database.Name,
-		cfg.Database.Port,
-		cfg.Database.SSLMode,
-	)
+	dsn := databaseDSN(cfg.Database)
 
 	log.Info("Using direct Postgres connection with DSN")
 
@@ -127,7 +134,7 @@ func connectWithDSN(cfg *config.Config, gormCfg *gorm.Config) error {
 	}
 
 	DB = gormDB
-	if err := finalizeConnection(); err != nil {
+	if err := finalizeConnection(cfg.Database.Name); err != nil {
 		sqlDB, dbErr := DB.DB()
 		if dbErr == nil {
 			sqlDB.Close()
@@ -150,17 +157,12 @@ func connectWithCloudSQL(cfg *config.Config, gormCfg *gorm.Config) error {
 		return fmt.Errorf("failed to create Cloud SQL dialer: %w", err)
 	}
 
-	dsn := fmt.Sprintf("user=%s password=%s dbname=%s sslmode=disable",
-		cfg.Database.User,
-		cfg.Database.Password,
-		cfg.Database.Name,
-	)
+	cloudConfig := cfg.Database
+	cloudConfig.Host, cloudConfig.Port, cloudConfig.SSLMode = "localhost", 5432, "disable"
 	if cfg.Database.UseIAMAuth {
-		dsn = fmt.Sprintf("user=%s dbname=%s sslmode=disable",
-			cfg.Database.User,
-			cfg.Database.Name,
-		)
+		cloudConfig.Password = ""
 	}
+	dsn := databaseDSN(cloudConfig)
 
 	log.Info("Using Cloud SQL Connector for instance %s (IAM auth: %t)", cfg.Database.InstanceConnectionName, cfg.Database.UseIAMAuth)
 
@@ -189,7 +191,7 @@ func connectWithCloudSQL(cfg *config.Config, gormCfg *gorm.Config) error {
 	DB = gormDB
 	cloudSQLDialer = dialer
 
-	if err := finalizeConnection(); err != nil {
+	if err := finalizeConnection(cfg.Database.Name); err != nil {
 		sqlDB.Close()
 		dialer.Close()
 		cloudSQLDialer = nil
@@ -199,10 +201,17 @@ func connectWithCloudSQL(cfg *config.Config, gormCfg *gorm.Config) error {
 	return nil
 }
 
-func finalizeConnection() error {
+func finalizeConnection(expectedDatabase string) error {
 	sqlDB, err := DB.DB()
 	if err != nil {
 		return log.Error("Failed to get underlying *sql.DB instance", err)
+	}
+	var actualDatabase string
+	if err := DB.Raw("SELECT current_database()").Scan(&actualDatabase).Error; err != nil {
+		return fmt.Errorf("cannot verify selected database: %w", err)
+	}
+	if actualDatabase != expectedDatabase {
+		return fmt.Errorf("refusing to migrate unexpected database %q; configured database is %q", actualDatabase, expectedDatabase)
 	}
 
 	// Set connection pool settings
@@ -325,6 +334,9 @@ func runMigrations() error {
 
 		// IMAP models
 		&models.IMAPConfig{},
+		&models.MailConnection{},
+		&models.MailOAuthState{},
+		&models.CloudflareRelay{},
 	); err != nil {
 		tx.Rollback()
 		return err

@@ -99,7 +99,7 @@ export function SMTPSettings({
   const onSubmit = async (data: SMTPConfig) => {
     try {
       // first test the configuration
-      await testConfiguration(data);
+      await testConfiguration(data, false);
 
       const response = await apiFetch(
         data.id ? "smtp-configs/" + data.id : "smtp-configs",
@@ -116,8 +116,8 @@ export function SMTPSettings({
       );
 
       if (!response.ok) {
-        const apiError = (await response.json()) as ApiError;
-        throw new Error(apiError.message);
+        const apiError = (await response.json()) as ApiError & { error?: unknown };
+        throw new Error(typeof apiError.error === "string" ? apiError.error : apiError.message || "Unable to save SMTP configuration");
       }
 
       refresh();
@@ -126,7 +126,7 @@ export function SMTPSettings({
       setIsDialogOpen(false);
       form.reset({ ...DEFAULT_PROVIDERS[SMTPProviderType.CUSTOM], id: null, isActive: true, fromEmail: "" });
     } catch (error: any) {
-      toast.error("Failed to save SMTP configuration");
+      toast.error("Failed to save SMTP configuration", { description: error.message });
     }
   };
 
@@ -141,7 +141,7 @@ export function SMTPSettings({
     }
   };
 
-  const testConfiguration = async (config: SMTPConfig) => {
+  const testConfiguration = async (config: SMTPConfig, notify = true) => {
     try {
       const response = await apiFetch("smtp/test", {
         method: "POST",
@@ -156,13 +156,13 @@ export function SMTPSettings({
       });
 
       if (!response.ok) {
-        const apiError = (await response.json()) as ApiError;
-        throw new Error(apiError.message);
+        const apiError = (await response.json()) as ApiError & { error?: unknown };
+        throw new Error(typeof apiError.error === "string" ? apiError.error : apiError.message || "Check the SMTP connection details");
       }
 
-      toast.success("SMTP configuration test successful");
+      if (notify) toast.success("SMTP configuration test successful");
     } catch (error: any) {
-      toast.error("SMTP configuration test failed");
+      if (notify) toast.error("SMTP configuration test failed", { description: error.message });
       throw error;
     }
   };
@@ -178,12 +178,12 @@ export function SMTPSettings({
 
   useEffect(() => {
     if (editConfig) {
-      form.reset(editConfig);
+      form.reset({ ...editConfig, password: "" });
       setIsDialogOpen(true);
     }
   }, [editConfig, form]);
 
-  const edit = (config: SMTPConfig) => { form.reset(config); setEditConfig(config); setIsDialogOpen(true); };
+  const edit = (config: SMTPConfig) => { form.reset({ ...config, password: "" }); setEditConfig(config); setIsDialogOpen(true); };
   const closeDialog = (open: boolean) => {
     setIsDialogOpen(open);
     if (!open) { setEditConfig(null); form.reset({ ...DEFAULT_PROVIDERS[SMTPProviderType.CUSTOM], id: null, isActive: true, fromEmail: "" }); }
@@ -197,7 +197,7 @@ export function SMTPSettings({
       <section className={workspaceClassName("product-panel")}>
         <div className={workspaceClassName("panel-toolbar")}><h2>SMTP senders</h2><span className="text-xs text-muted-foreground">{smtpConfigs.length} connections</span></div>
         {isLoading || error ? <QueryState loading={isLoading} error={error} retry={refresh}/> : smtpConfigs.length === 0 ? <Empty title="Connect your first sender" description="Use your existing email provider to send emails with Xem." action={<Button onClick={() => setIsDialogOpen(true)}>Add SMTP connection</Button>}/> : <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-          {smtpConfigs.map(config => String(config.provider) === "MANAGED" ? <CollectionCard key={config.id} icon={<ShieldCheck size={22}/>} badge="Xem managed" title={config.fromEmail} description="Delivery through your verified domain" action="Manage sending" onAction={() => { window.location.href = "/settings/sending"; }} /> : <CollectionCard key={config.id} icon={<Mail size={22}/>} badge={config.provider} title={config.fromEmail || config.host} description={`Server: ${config.host}:${config.port}`} action="Edit connection" onAction={() => edit(config)} menu={
+          {smtpConfigs.map(config => ["GOOGLE_OAUTH", "CLOUDFLARE"].includes(String(config.provider)) ? <CollectionCard key={config.id} icon={<ShieldCheck size={22}/>} badge={String(config.provider) === "GOOGLE_OAUTH" ? "Google OAuth" : "Cloudflare"} title={config.fromEmail} description="Managed through your provider connection." action="Manage connection" onAction={() => { if (String(config.provider) === "GOOGLE_OAUTH") window.location.href = "/settings/imap#connected-mail-google"; else document.getElementById("connected-mail-cloudflare")?.scrollIntoView({behavior:"smooth"}); }} /> : String(config.provider) === "MANAGED" ? <CollectionCard key={config.id} icon={<ShieldCheck size={22}/>} badge="Xem managed" title={config.fromEmail} description="Delivery through your verified domain" action="Manage sending" onAction={() => { window.location.href = "/settings/sending"; }} /> : <CollectionCard key={config.id} icon={<Mail size={22}/>} badge={config.provider} title={config.fromEmail || config.host} description={`Server: ${config.host}:${config.port}`} action="Edit connection" onAction={() => edit(config)} menu={
             <DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="size-8" aria-label={`Actions for ${config.host}`}><MoreHorizontal size={18}/></Button></DropdownMenuTrigger><DropdownMenuContent align="end">
               <DropdownMenuItem onClick={() => edit(config)}><Pencil className="mr-2 size-4"/>Edit connection</DropdownMenuItem>
               <DropdownMenuItem onClick={() => { void testConfiguration(config).catch(() => {}); }}><TestTube className="mr-2 size-4"/>Test connection</DropdownMenuItem>
