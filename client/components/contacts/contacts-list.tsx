@@ -29,6 +29,8 @@ import { CollectionPagination } from "@/components/ui/collection-pagination";
 import { Status } from "@/components/marketing/shared";
 import { ContactTagEditor } from "@/components/contacts/contact-tag-editor";
 import { ContactImport } from "@/components/contacts/contact-import";
+import { AddContactDialog } from "@/components/contacts/add-contact-dialog";
+import { DownloadCsvTemplate } from "@/components/contacts/download-csv-template";
 import { PageHeader } from "@/components/page-header";
 import { Users, ListFilter, CalendarDays } from "lucide-react";
 
@@ -101,6 +103,8 @@ export function ContactsList({ listId }: { listId: string }) {
     <>
       {tagContact && <ContactTagEditor contactId={tagContact} close={() => setTagContact(null)} onSaved={() => void refresh()}/>}
       <PageHeader heading={list?.name || "Contact list"} description={list?.description || "Manage the contacts in this audience."} backButton={{ href: "/audience/lists", label: "Back to contact lists" }}>
+        <DownloadCsvTemplate />
+        <AddContactDialog listId={listId} onAdded={refresh} />
         <ContactImport listId={listId} onImportComplete={refresh}/>
       </PageHeader>
       <div className="mb-6 grid gap-4 sm:grid-cols-3">

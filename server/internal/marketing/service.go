@@ -6,10 +6,13 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
 	"net/mail"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	_ "time/tzdata"
@@ -192,11 +195,124 @@ func (s *Service) MaterializeDue(ctx context.Context, now time.Time) error {
 	}
 	return nil
 }
+// tokenPattern matches {{ field }} or {field} with optional whitespace.
+// Unknown / empty values are left in place so authors spot typos instead of
+// having them silently swallowed at send time.
+var tokenPattern = regexp.MustCompile(`\{\{\s*([a-zA-Z0-9_]+)\s*\}\}|\{\s*([a-zA-Z0-9_]+)\s*\}`)
+
 func personalize(body string, c models.Contact) string {
-	for k, v := range map[string]string{"first_name": c.FirstName, "last_name": c.LastName, "name": strings.TrimSpace(c.FirstName + " " + c.LastName), "email": c.Email, "company": c.Company} {
-		body = strings.ReplaceAll(body, "{{"+k+"}}", html.EscapeString(v))
+	values := contactFields(c)
+	return tokenPattern.ReplaceAllStringFunc(body, func(match string) string {
+		key := tokenKey(match)
+		raw, ok := values[strings.ToLower(key)]
+		if !ok || raw == "" {
+			return match
+		}
+		return html.EscapeString(raw)
+	})
+}
+
+// PersonalizePlain renders merge tokens without HTML-escaping the substituted
+// values. Use for plain-text fields (subject lines, preview text, plain email
+// bodies) where escaping would corrupt the visible content.
+func PersonalizePlain(body string, c models.Contact) string {
+	values := contactFields(c)
+	return tokenPattern.ReplaceAllStringFunc(body, func(match string) string {
+		key := tokenKey(match)
+		raw, ok := values[strings.ToLower(key)]
+		if !ok || raw == "" {
+			return match
+		}
+		return raw
+	})
+}
+
+// contactFields builds the lowercase-keyed map of every merge value available
+// for a contact: built-in fields plus the metadata JSONB column. Empty values
+// are dropped so the substitution function can distinguish "no field" from
+// "field with empty string".
+func contactFields(c models.Contact) map[string]string {
+	fullName := strings.TrimSpace(strings.TrimSpace(c.FirstName) + " " + strings.TrimSpace(c.LastName))
+	out := map[string]string{
+		"first_name": strings.TrimSpace(c.FirstName),
+		"last_name":  strings.TrimSpace(c.LastName),
+		"name":       fullName,
+		"full_name":  fullName,
+		"email":      strings.TrimSpace(c.Email),
+		"company":    strings.TrimSpace(c.Company),
+		"phone":      strings.TrimSpace(c.Phone),
+		"country":    strings.TrimSpace(c.Country),
+		"state":      strings.TrimSpace(c.State),
+		"city":       strings.TrimSpace(c.City),
+		"zip":        strings.TrimSpace(c.Zip),
+		"postal_code": strings.TrimSpace(c.Zip),
+		"address":    strings.TrimSpace(c.Address),
+		"linkedin":   strings.TrimSpace(c.LinkedIn),
+		"twitter":    strings.TrimSpace(c.Twitter),
+		"facebook":   strings.TrimSpace(c.Facebook),
+		"instagram":  strings.TrimSpace(c.Instagram),
 	}
-	return body
+	for k, v := range out {
+		if v == "" {
+			delete(out, k)
+		}
+	}
+	if len(c.Metadata) > 0 {
+		var meta map[string]interface{}
+		if err := json.Unmarshal(c.Metadata, &meta); err == nil {
+			for k, v := range meta {
+				key := strings.ToLower(strings.TrimSpace(k))
+				if key == "" {
+					continue
+				}
+				if _, exists := out[key]; exists {
+					continue
+				}
+				s, ok := stringifyMetaValue(v)
+				if !ok {
+					continue
+				}
+				out[key] = s
+			}
+		}
+	}
+	return out
+}
+
+// stringifyMetaValue converts a metadata JSON value into the string used for
+// substitution. Numbers and booleans are accepted because contact imports
+// routinely carry them.
+func stringifyMetaValue(v interface{}) (string, bool) {
+	switch t := v.(type) {
+	case string:
+		s := strings.TrimSpace(t)
+		return s, s != ""
+	case float64:
+		return strconv.FormatFloat(t, 'f', -1, 64), true
+	case bool:
+		return strconv.FormatBool(t), true
+	case nil:
+		return "", false
+	default:
+		b, err := json.Marshal(t)
+		if err != nil {
+			return "", false
+		}
+		s := strings.TrimSpace(string(b))
+		return s, s != ""
+	}
+}
+
+// tokenKey extracts the field name from a {{ field }} or {field} match.
+func tokenKey(match string) string {
+	sub := tokenPattern.FindStringSubmatch(match)
+	if len(sub) < 3 {
+		return ""
+	}
+	if sub[1] != "" {
+		return sub[1]
+	}
+	return sub[2]
 }
 
 // PrepareEdition builds bounded batches with a stable cursor and a unique delivery key.

@@ -1,0 +1,9 @@
+email,first_name,last_name,company,title,city,country,linkedin,industry,website
+[email protected],Priya,Sharma,Acme Robotics,Head of Growth,Mumbai,India,https://linkedin.com/in/priyasharma,SaaS,https://acme.com
+[email protected],Rohan,Verma,Northwind Logistics,Operations Director,Bangalore,India,https://linkedin.com/in/rohanverma,Logistics,https://northwind.example
+[email protected],Anita,Patel,Globex Health,VP Engineering,Pune,India,https://linkedin.com/in/anitapatel,HealthTech,https://globex-health.example
+[email protected],Vikram,Singh,Initech Cloud,CTO,Hyderabad,India,https://linkedin.com/in/vikramsingh,Cloud Infrastructure,https://initech-cloud.example
+[email protected],Neha,Gupta,Soylent Foods,Marketing Lead,Delhi,India,https://linkedin.com/in/nehagupta,FMCG,https://soylent.example
+[email protected],Arjun,Kumar,Umbrella Pharma,Product Manager,Chennai,India,https://linkedin.com/in/arjunkumar,Pharma,https://umbrella.example
+[email protected],Sneha,Reddy,Tyrell Robotics,Founder,Bangalore,India,https://linkedin.com/in/snehareddy,Robotics,https://tyrell.example
+[email protected],Karan,Mehta,Hooli Marketing,Demand Generation Manager,Gurgaon,India,https://linkedin.com/in/karanmehta,MarTech,https://hooli.example

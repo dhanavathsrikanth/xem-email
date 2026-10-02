@@ -25,6 +25,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "../ui/textarea";
 import { toast } from "sonner";
 import { useApi } from "@/hooks/use-api";
+import { DownloadCsvTemplate } from "./download-csv-template";
 
 interface ContactImportProps {
   listId: string;
@@ -319,6 +320,10 @@ export function ContactImport({
                 </li>
                 <li>Any additional fields will be stored as metadata</li>
               </ul>
+              <p className="mt-3">
+                Need a starting template?{" "}
+                <DownloadCsvTemplate variant="link" className="text-xs font-medium text-primary underline-offset-2 hover:underline" />
+              </p>
             </div>
           </div>
         )}

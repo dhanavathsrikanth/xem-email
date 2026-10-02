@@ -58,6 +58,21 @@ const navItems: NavItem[] = [
     ),
   },
   {
+    name: "Cold Email",
+    href: "/cold-email",
+    icon: (
+      <img
+        alt="Cold Email"
+        className="w-6 dark:invert invert-0"
+        src="https://img.icons8.com/ios-filled/50/chat-message--v1.png"
+      />
+    ),
+    subItems: [
+      { name: "All templates", href: "/cold-email" },
+      { name: "New template", href: "/cold-email/new" },
+    ],
+  },
+  {
     name: "Campaigns",
     href: "/campaigns",
     icon: (
