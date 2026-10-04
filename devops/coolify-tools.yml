@@ -1,7 +1,7 @@
 services:
   xem-mcp:
     build:
-      context: ../mcp
+      context: ./mcp
     restart: unless-stopped
     environment:
       HOST: 0.0.0.0
@@ -24,3 +24,4 @@ services:
 networks:
   coolify:
     external: true
+
