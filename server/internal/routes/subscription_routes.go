@@ -10,6 +10,14 @@ import (
 	"gorm.io/gorm"
 )
 
+// Read-only billing is available independently of the unfinished payment flow.
+// The caller supplies the authenticated API group.
+func SetupSubscriptionReadRoutes(api *echo.Group, db *gorm.DB) {
+	handler := handlers.NewSubscriptionHandler(db)
+	api.GET("/plans", handler.GetPlans)
+	api.GET("/subscriptions", handler.GetSubscription)
+}
+
 func SetupSubscriptionRoutes(e *echo.Echo, db *gorm.DB) {
 	subscriptionHandler := handlers.NewSubscriptionHandler(db)
 	authMiddleware := middleware.NewAuthMiddleware(os.Getenv("JWT_SECRET"))

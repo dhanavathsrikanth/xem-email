@@ -61,6 +61,7 @@ func (s *Server) registerRoutes() {
 	// @Summary Register CRUD routes for all models
 	// @Description Register CRUD routes for all models
 	registry.RegisterCRUDRoutes(api, s.db)
+	routes.SetupSubscriptionReadRoutes(api, s.db)
 
 	routes.SetupUploadRoutes(api, s.config)
 }

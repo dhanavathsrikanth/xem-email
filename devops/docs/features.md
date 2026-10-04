@@ -64,8 +64,29 @@ flags. SMTP, Gmail inbox sync, campaign delivery and email-based password resets
 are outside this deployment's verification scope. Email reports remain empty
 until actual delivery events exist.
 
-Payment processing requires a separate payment-provider configuration and working
-billing routes; deploying the application does not configure or verify payments.
+Billing now reads the actual product catalog and workspace subscription from the
+backend through authenticated `GET /api/billing`. An absent subscription is an
+empty state; database errors and 15-second timeouts produce a retryable error,
+not an endless spinner. Deleted products are excluded. The legacy client called
+missing routes and expected an unrelated payment service's data format.
+
+The page is currently read-only. Paid checkout, payment history and cancellation
+must not be advertised as functional: the provider credentials are absent and
+the existing Dodo webhook signature verifier is unfinished. A future payment
+integration needs verified webhooks and end-to-end payment tests before enabling
+checkout; adding an API key alone is insufficient.
+
+Completed deployment checks used one isolated synthetic workspace: 31 API/page
+reads, CRM contact/stage/note/tag changes, template preview/versioning, public
+form capture, R2 upload/download, a Redis worker workflow reaching COMPLETED,
+assistant streaming with a scoped workspace tool and Redis persistence, and
+Gemini form, analytics and workflow proposal generation. No email was sent.
+Google OAuth initiation used the correct production client and callback; a real
+Google account consent/login remains a user test. TokenHarbor's free quota was
+exhausted during verification, so the fallback cannot currently guarantee service.
+
+AI campaign analytics and automation optimization verify the authenticated
+workspace's ownership before any context read or model request.
 
 After runtime environment edits, restart the dashboard to apply them. Backend
 source changes require a backend deploy. Build one application at a time on the
