@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"net/http"
 	"time"
 
@@ -41,8 +42,8 @@ type GetPlanResponse struct {
 // @Success 200 {object} GetPlansResponse "Plans"
 // @Router /plans [get]
 func (h *SubscriptionHandler) GetPlans(c echo.Context) error {
-	var plans []models.Product
-	if err := h.db.Where("is_active = ?", true).Preload("Features").Find(&plans).Error; err != nil {
+	plans := make([]models.Product, 0)
+	if err := h.db.Where("is_deleted = ?", false).Preload("Features").Find(&plans).Error; err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to get plans"})
 	}
 
@@ -146,8 +147,11 @@ func (h *SubscriptionHandler) GetSubscription(c echo.Context) error {
 	teamID := c.Get("teamID").(string)
 
 	var subscription models.Subscription
-	if err := h.db.Where("team_id = ?", teamID).First(&subscription).Error; err != nil {
-		return c.JSON(http.StatusNotFound, map[string]string{"error": "No active subscription"})
+	if err := h.db.Preload("Product.Features").Where("team_id = ? AND is_deleted = ?", teamID, false).First(&subscription).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return c.JSON(http.StatusNotFound, map[string]string{"error": "No active subscription"})
+		}
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to get subscription"})
 	}
 
 	return c.JSON(http.StatusOK, subscription)

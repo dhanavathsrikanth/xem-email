@@ -6,11 +6,13 @@ import (
 	"kori/internal/ai"
 	"kori/internal/ai/agent"
 	"kori/internal/config"
+	"kori/internal/models"
 	"kori/internal/utils/logger"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"gorm.io/gorm"
 )
@@ -44,9 +46,9 @@ func (h *AIHandler) QueryAnalytics(c echo.Context) error {
 	teamID := c.Get("teamID").(string)
 
 	var req struct {
-		Query      string                 `json:"query" validate:"required"`
-		Scope      map[string]interface{} `json:"scope"` // Optional: campaignId, startDate, endDate
-		MaxTokens  int                    `json:"maxTokens"`
+		Query     string                 `json:"query" validate:"required"`
+		Scope     map[string]interface{} `json:"scope"` // Optional: campaignId, startDate, endDate
+		MaxTokens int                    `json:"maxTokens"`
 	}
 
 	if err := c.Bind(&req); err != nil {
@@ -58,6 +60,11 @@ func (h *AIHandler) QueryAnalytics(c echo.Context) error {
 	}
 
 	aiHandlerLog.Info("Processing AI query: %s", req.Query)
+	if campaignID, ok := req.Scope["campaignId"].(string); ok && campaignID != "" {
+		if err := h.requireWorkspaceResource(c, &models.Campaign{}, campaignID, teamID); err != nil {
+			return err
+		}
+	}
 
 	// Build analytics context based on scope
 	var contextBuilder strings.Builder
@@ -119,10 +126,10 @@ If the data is insufficient to answer the question accurately, say so clearly.`
 	aiHandlerLog.Success("AI query completed (tokens: %d)", response.TokensUsed)
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
-		"answer":      response.Content,
-		"tokensUsed":  response.TokensUsed,
-		"model":       response.Model,
-		"query":       req.Query,
+		"answer":     response.Content,
+		"tokensUsed": response.TokensUsed,
+		"model":      response.Model,
+		"query":      req.Query,
 	})
 }
 
@@ -134,18 +141,20 @@ func (h *AIHandler) OptimizeAutomation(c echo.Context) error {
 		})
 	}
 
-	_ = c.Get("teamID").(string) // teamID for future ownership verification
+	teamID := c.Get("teamID").(string)
 
 	var req struct {
-		AutomationID      string `json:"automationId" validate:"required"`
-		OptimizationGoal  string `json:"optimizationGoal"` // e.g., "increase_open_rate", "reduce_unsubscribes"
+		AutomationID     string `json:"automationId" validate:"required"`
+		OptimizationGoal string `json:"optimizationGoal"` // e.g., "increase_open_rate", "reduce_unsubscribes"
 	}
 
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
 
-	// TODO: Verify automation ownership by loading automation and checking team_id
+	if err := h.requireWorkspaceResource(c, &models.Automation{}, req.AutomationID, teamID); err != nil {
+		return err
+	}
 
 	aiHandlerLog.Info("Generating optimization suggestions for automation %s", req.AutomationID)
 
@@ -185,11 +194,11 @@ Provide 3-5 specific, actionable recommendations.`,
 	aiHandlerLog.Success("Optimization suggestions generated")
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
-		"suggestions":    response.Content,
-		"tokensUsed":     response.TokensUsed,
-		"model":          response.Model,
-		"automationId":   req.AutomationID,
-		"goal":           req.OptimizationGoal,
+		"suggestions":  response.Content,
+		"tokensUsed":   response.TokensUsed,
+		"model":        response.Model,
+		"automationId": req.AutomationID,
+		"goal":         req.OptimizationGoal,
 	})
 }
 
@@ -276,4 +285,20 @@ Provide a complete, ready-to-use automation structure.`,
 		"model":       response.Model,
 		"description": req.Description,
 	})
+}
+
+// Check ownership before reading context or contacting the model provider.
+func (h *AIHandler) requireWorkspaceResource(c echo.Context, model interface{}, id, teamID string) error {
+	if _, err := uuid.Parse(id); err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "Invalid resource ID")
+	}
+	var count int64
+	if err := h.db.WithContext(c.Request().Context()).Model(model).
+		Where("id = ? AND team_id = ? AND is_deleted = ?", id, teamID, false).Count(&count).Error; err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Unable to verify workspace resource")
+	}
+	if count == 0 {
+		return echo.NewHTTPError(http.StatusNotFound, "Workspace resource not found")
+	}
+	return nil
 }
