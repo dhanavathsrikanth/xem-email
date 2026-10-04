@@ -16,7 +16,7 @@ const nextConfig = {
       },
       {
         source: "/signup",
-        destination: "/auth/signup",
+        destination: "/auth/register",
         permanent: true,
       },
       {
@@ -24,11 +24,15 @@ const nextConfig = {
         destination: "/billing/overview",
         permanent: true,
       },
-      {
-        source: "/api/billing/:path*",
-        destination: `${process.env.NEXT_PUBLIC_PAYWALL_URL}/:path*`,
-        permanent: false,
-      },
+      ...(process.env.NEXT_PUBLIC_PAYWALL_URL
+        ? [
+            {
+              source: "/api/billing/:path*",
+              destination: `${process.env.NEXT_PUBLIC_PAYWALL_URL}/:path*`,
+              permanent: false,
+            },
+          ]
+        : []),
     ];
   },
   images: {

@@ -36,6 +36,7 @@ type S3Service struct {
 	logger      *logger.Logger
 	accessKey   string
 	secretKey   string
+	isR2        bool
 }
 
 func NewS3Service(bucketName, endpoint, region, accessKey, secretKey string) (*S3Service, error) {
@@ -46,9 +47,18 @@ func NewS3Service(bucketName, endpoint, region, accessKey, secretKey string) (*S
 		return nil, log.Error("S3 credentials are empty ❌", fmt.Errorf("accessKey or secretKey is empty"))
 	}
 
+	isR2 := strings.EqualFold(strings.TrimSpace(os.Getenv("STORAGE_PROVIDER")), "r2")
+	explicitEndpoint := os.Getenv("S3_ENDPOINT_URL")
+	if isR2 {
+		if explicitEndpoint == "" {
+			return nil, fmt.Errorf("S3_ENDPOINT_URL is required for Cloudflare R2; use the bucket's S3 API endpoint")
+		}
+		region = "auto"
+	}
+
 	// Preserve legacy endpoint/signing behavior unless the operator opts into a
 	// full endpoint URL. This supports private S3-compatible Swarm services.
-	endpointURL, signingRegion, pathStyle, err := resolveS3Endpoint(endpoint, region, os.Getenv("S3_ENDPOINT_URL"))
+	endpointURL, signingRegion, pathStyle, err := resolveS3Endpoint(endpoint, region, explicitEndpoint)
 	if err != nil {
 		return nil, err
 	}
@@ -71,6 +81,11 @@ func NewS3Service(bucketName, endpoint, region, accessKey, secretKey string) (*S
 	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
 		o.BaseEndpoint = aws.String(endpointURL)
 		o.UsePathStyle = pathStyle
+		if isR2 {
+			// Avoid optional AWS checksum/trailer features on the R2 S3 API.
+			o.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
+			o.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired
+		}
 	})
 
 	// Verify credentials by making a test API call
@@ -93,6 +108,7 @@ func NewS3Service(bucketName, endpoint, region, accessKey, secretKey string) (*S
 		accessKey:   accessKey,
 		secretKey:   secretKey,
 		logger:      log,
+		isR2:        isR2,
 	}, nil
 }
 
@@ -107,11 +123,9 @@ func (s *S3Service) UploadFile(ctx context.Context, file []byte, filename string
 
 	s.logger.Info("🔄 Processing upload for file: %s", filename)
 
-	is_r2 := os.Getenv("STORAGE_PROVIDER") == "r2"
-
-	ACL := acl
-	if is_r2 {
-		ACL = types.ObjectCannedACLPublicRead
+	if s.isR2 {
+		// R2 has no object ACLs. Access to private objects uses signed GET URLs.
+		acl = ""
 	}
 
 	// Upload to storage
@@ -119,7 +133,7 @@ func (s *S3Service) UploadFile(ctx context.Context, file []byte, filename string
 		Bucket:      aws.String(s.bucketName),
 		Key:         aws.String(filename),
 		Body:        bytes.NewReader(file),
-		ACL:         ACL,
+		ACL:         acl,
 		ContentType: aws.String(contentType),
 	})
 	if err != nil {
