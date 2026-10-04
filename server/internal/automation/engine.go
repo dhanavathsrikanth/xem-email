@@ -66,24 +66,6 @@ func (e *Engine) Execute(ctx context.Context, automationID, contactID string, tr
 		return fmt.Errorf("failed to load contact: %w", err)
 	}
 
-	// Load or create execution record
-	execution, isNew, err := e.getOrCreateExecution(ctx, automationID, contactID, triggerData, currentNodeID)
-	if err != nil {
-		return fmt.Errorf("failed to get execution: %w", err)
-	}
-
-	if execution.Status == models.ExecutionStatusCompleted || (execution.Status == models.ExecutionStatusWaiting && currentNodeID == "") {
-		return nil
-	}
-
-	// Create execution context
-	execCtx := e.buildExecutionContext(execution, &contact, &automation)
-
-	// Emit start event for new executions
-	if isNew {
-		events.Emit("automation.execution.started", execution)
-	}
-
 	// Find starting node
 	var startNode *models.AutomationNode
 	if currentNodeID != "" {
@@ -106,6 +88,24 @@ func (e *Engine) Execute(ctx context.Context, automationID, contactID string, tr
 
 	if startNode == nil {
 		return fmt.Errorf("could not find start node")
+	}
+
+	// Load or create execution record
+	execution, isNew, err := e.getOrCreateExecution(ctx, automationID, contactID, triggerData, startNode.ID)
+	if err != nil {
+		return fmt.Errorf("failed to get execution: %w", err)
+	}
+
+	if execution.Status == models.ExecutionStatusCompleted || (execution.Status == models.ExecutionStatusWaiting && currentNodeID == "") {
+		return nil
+	}
+
+	// Create execution context
+	execCtx := e.buildExecutionContext(execution, &contact, &automation)
+
+	// Emit start event for new executions
+	if isNew {
+		events.Emit("automation.execution.started", execution)
 	}
 
 	// Execute the workflow

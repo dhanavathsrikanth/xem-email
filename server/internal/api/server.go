@@ -54,11 +54,14 @@ func NewServer(cfg *config.Config, db *gorm.DB) *Server {
 	e.Use(echomiddleware.TimeoutWithConfig(echomiddleware.TimeoutConfig{
 		Timeout: 30 * time.Second,
 		Skipper: func(c echo.Context) bool {
-			return c.Request().Method == "POST" && c.Path() == "/api/v1/marketing/email-draft"
+			return c.Path() == "/mcp" || c.Path() == "/internal/ai/chat/completions" || (c.Request().Method == "POST" &&
+				(c.Path() == "/api/v1/marketing/email-draft" || c.Path() == "/api/v1/marketing/form-draft" ||
+					c.Path() == "/api/v1/ai/query" || c.Path() == "/api/v1/ai/build" || c.Path() == "/api/v1/ai/optimize"))
 		},
 	}))
 	e.Use(echomiddleware.GzipWithConfig(echomiddleware.GzipConfig{
-		Level: 5,
+		Level:   5,
+		Skipper: func(c echo.Context) bool { return c.Path() == "/mcp" || c.Path() == "/internal/ai/chat/completions" },
 	}))
 	e.Use(echomiddleware.BodyLimit("10M"))
 

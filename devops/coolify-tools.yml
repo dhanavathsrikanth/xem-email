@@ -1,0 +1,26 @@
+services:
+  xem-mcp:
+    build:
+      context: ../mcp
+    restart: unless-stopped
+    environment:
+      HOST: 0.0.0.0
+      PORT: "3000"
+      XEM_API_BASE_URL: https://api.goclaim.space/api/v1
+      XEM_MCP_PUBLIC_URL: https://api.goclaim.space/mcp
+      XEM_MCP_ALLOWED_ORIGINS: https://app.goclaim.space
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    networks:
+      coolify:
+        aliases:
+          - xem-mcp
+networks:
+  coolify:
+    external: true

@@ -905,6 +905,19 @@ func (h *AuthHandler) GoogleAuthCallback(c echo.Context) error {
 	if err := json.Unmarshal(userDataBytes, &userData); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Failed to parse user data from Google"})
 	}
+	// Only a verified Google email may create or link a local account.
+	email, _ := userData["email"].(string)
+	providerID, _ := userData["id"].(string)
+	verified, _ := userData["verified_email"].(bool)
+	if email == "" || providerID == "" || !verified {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Google account must have a verified email"})
+	}
+	if name, _ := userData["given_name"].(string); name == "" {
+		userData["given_name"] = strings.SplitN(email, "@", 2)[0]
+	}
+	if _, ok := userData["family_name"].(string); !ok {
+		userData["family_name"] = ""
+	}
 
 	// Start a transaction
 	tx := h.db.Begin()

@@ -101,6 +101,8 @@ type AIConfig struct {
 	Enabled         bool
 	Provider        string // "anthropic", "openai"
 	AnthropicAPIKey string
+	ProxyBaseURL    string
+	ProxyAPIKey     string
 	Model           string // "claude-4-opus", "claude-4-sonnet"
 	AutoOptimize    bool
 	MaxTokens       int
@@ -184,6 +186,8 @@ func Load() (*Config, error) {
 			Enabled:         getEnvAsBool("AI_ENABLED", false),
 			Provider:        getEnv("AI_PROVIDER", "anthropic"),
 			AnthropicAPIKey: getEnv("ANTHROPIC_API_KEY", ""),
+			ProxyBaseURL:    getEnv("AI_PROXY_BASE_URL", ""),
+			ProxyAPIKey:     getEnv("AI_PROXY_API_KEY", ""),
 			Model:           getEnv("AI_MODEL", "claude-4-sonnet"),
 			AutoOptimize:    getEnvAsBool("AI_AUTO_OPTIMIZE", false),
 			MaxTokens:       getEnvAsInt("AI_MAX_TOKENS", 4096),

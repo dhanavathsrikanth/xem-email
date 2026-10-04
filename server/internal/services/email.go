@@ -235,7 +235,7 @@ func registerEmailEventHandlers() {
 	})
 
 	events.On("users.created", func(data interface{}) {
-		if os.Getenv("SERVICE_NOTIFICATIONS_ENABLED") == "true" {
+		if !legacyAccountEmailsEnabled() {
 			return
 		}
 		user := data.(*models.User)
@@ -249,7 +249,7 @@ func registerEmailEventHandlers() {
 	})
 
 	events.On("password.reset", func(data interface{}) {
-		if os.Getenv("SERVICE_NOTIFICATIONS_ENABLED") == "true" {
+		if !legacyAccountEmailsEnabled() {
 			return
 		}
 		reset := data.(*models.PasswordReset)
@@ -300,6 +300,14 @@ func registerEmailEventHandlers() {
 			}
 		}
 	})
+}
+
+// An explicit service-notification setting selects managed notices (true) or
+// disables account email (false). Only older installations without the setting
+// use the legacy workspace SMTP handlers.
+func legacyAccountEmailsEnabled() bool {
+	_, configured := os.LookupEnv("SERVICE_NOTIFICATIONS_ENABLED")
+	return !configured
 }
 
 func sendPasswordResetEmail(reset *models.PasswordReset) error {

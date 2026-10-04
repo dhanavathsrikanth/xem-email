@@ -1,10 +1,12 @@
 package api
 
 import (
+	"kori/internal/ai"
 	"kori/internal/api/middleware"
 	"kori/internal/api/registry"
 	"kori/internal/routes"
 	"net/http"
+	"os"
 
 	_ "kori/docs/swagger"
 
@@ -13,6 +15,22 @@ import (
 )
 
 func (s *Server) registerRoutes() {
+	if os.Getenv("AI_GATEWAY_ENABLED") == "true" {
+		gateway, err := ai.NewGateway(os.Getenv("AI_GATEWAY_SECRET"),
+			ai.GatewayProvider{BaseURL: os.Getenv("AI_PRIMARY_BASE_URL"), APIKey: os.Getenv("AI_PRIMARY_API_KEY"), Model: os.Getenv("AI_PRIMARY_MODEL")},
+			ai.GatewayProvider{BaseURL: os.Getenv("AI_FALLBACK_BASE_URL"), APIKey: os.Getenv("AI_FALLBACK_API_KEY"), Model: os.Getenv("AI_FALLBACK_MODEL")})
+		if err != nil {
+			panic(err)
+		}
+		s.echo.POST("/internal/ai/chat/completions", echo.WrapHandler(gateway))
+	}
+	if endpoint := os.Getenv("MCP_INTERNAL_URL"); endpoint != "" {
+		handler, err := mcpProxy(endpoint, s.config.Server.PublicURL)
+		if err != nil {
+			panic(err)
+		}
+		s.echo.Any("/mcp", handler)
+	}
 	s.echo.GET("/", func(c echo.Context) error {
 		return c.String(http.StatusOK, "Hello, World!")
 	})

@@ -200,6 +200,13 @@ func createTestContact(t *testing.T, db *gorm.DB, teamID string) *models.Contact
 
 func TestEngine_Execute_SimpleLinearFlow(t *testing.T) {
 	engine, _, db := setupTestEngine(t)
+	// SQLite accepts empty UUID strings, unlike production PostgreSQL. Inspect
+	// the initial INSERT too, rather than only the final node after execution.
+	require.NoError(t, db.Callback().Create().Before("gorm:create").Register("test:initial-execution-node", func(tx *gorm.DB) {
+		if execution, ok := tx.Statement.Dest.(*models.AutomationExecution); ok {
+			assert.Equal(t, "start", execution.CurrentNodeID)
+		}
+	}))
 
 	// Create automation: START -> EMAIL -> EXIT
 	nodes := []models.AutomationNode{

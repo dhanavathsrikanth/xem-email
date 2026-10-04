@@ -191,6 +191,12 @@ func main() {
 		if cfg.AI.Provider == "anthropic" {
 			aiClient = ai.NewAnthropicClient(cfg.AI.AnthropicAPIKey, cfg.AI.Model)
 			logger.Success("Initialized Anthropic AI client with model: %s", cfg.AI.Model)
+		} else if cfg.AI.Provider == "openai-compatible" {
+			aiClient, err = ai.NewOpenAICompatibleClient(cfg.AI.ProxyBaseURL, cfg.AI.ProxyAPIKey, cfg.AI.Model)
+			if err != nil {
+				log.Fatalf("Invalid AI configuration: %v", err)
+			}
+			logger.Success("Initialized compatible AI gateway with model: %s", cfg.AI.Model)
 		} else {
 			logger.Warn("Unknown AI provider: %s, AI features will be disabled", cfg.AI.Provider)
 		}
