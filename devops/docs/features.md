@@ -69,6 +69,10 @@ backend through authenticated `GET /api/billing`. An absent subscription is an
 empty state; database errors and 15-second timeouts produce a retryable error,
 not an endless spinner. Deleted products are excluded. The legacy client called
 missing routes and expected an unrelated payment service's data format.
+The startup migration includes products, product feature configurations and
+subscriptions. This migration was tested on a one-day Neon branch copied from
+production: both billing reads succeeded and existing user, team and contact
+counts were preserved. Production uses the direct PostgreSQL endpoint.
 
 The page is currently read-only. Paid checkout, payment history and cancellation
 must not be advertised as functional: the provider credentials are absent and

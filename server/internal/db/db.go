@@ -331,6 +331,9 @@ func runMigrations() error {
 		&models.SendTimeQueue{},
 
 		// Subscription models
+		&models.Product{},
+		&models.ProductFeatureConfig{},
+		&models.Subscription{},
 
 		// IMAP models
 		&models.IMAPConfig{},
